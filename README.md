@@ -23,8 +23,6 @@ LocalMusicPlayer 是一个 Windows 本地音乐播放器，版本 **1.0.0.0**。
 
 在 Windows PowerShell 5.1 中运行 `./build.ps1`，即可使用系统自带的 .NET Framework C# 编译器生成 `LocalMusicPlayer.exe`。构建不需要下载完整 .NET SDK。运行时仍需把 `TagLibSharp.dll` 放在 EXE 旁边。
 
-`示例歌单/` 和旧版压缩包不属于项目源码，请勿上传其中的音乐文件。
-
 ## 许可
 
 LocalMusicPlayer 自有源码按 [MIT 许可](LICENSE)发布。随程序分发的 `TagLibSharp.dll` 是独立组件，采用 LGPL-2.1-only；其许可正文见 [TagLibSharp-LICENSE.txt](TagLibSharp-LICENSE.txt)，源码见 [mono/taglib-sharp](https://github.com/mono/taglib-sharp)。两份许可证分别适用于各自的代码。
