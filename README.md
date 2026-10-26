@@ -18,6 +18,14 @@ LocalMusicPlayer 是一个 Windows 本地音乐播放器，版本 **1.0.0.0**。
 
 运行环境为 Windows PowerShell 5.1、.NET Framework 4.6.2 或更高版本，以及 Windows 桌面媒体组件。支持扫描 MP3、WAV、WMA、M4A、AAC、FLAC、OGG；实际解码能力取决于 Windows 媒体组件。
 
+## 常见问题
+
+1.首次启动 `LocalMusicPlayer.exe` ，系统会弹出“Windows 已保护你的电脑”窗口，如果你想使用这款播放器，直接选择“更多信息 → 仍要运行”
+2.如果启动后出现类似以下内容：
+未能加载文件或程序集 `"file:///D:\AAA APP for \LocalMusicPlayer\TagLibSharp.dll'` 或它的某一个依赖项。
+不支持操作。(异常来自 `HRESULT:0×80131515`)
+右键 `TagLibSharp.dll` ，点击“解决锁定”即可解决。
+
 ## 源码与构建
 
 播放器界面和逻辑位于 `LocalMusicPlayer.ps1`；无控制台启动器源码位于 `src/LocalMusicPlayer.Host.cs`。图标素材位于 `assets/`。
@@ -27,3 +35,7 @@ LocalMusicPlayer 是一个 Windows 本地音乐播放器，版本 **1.0.0.0**。
 ## 许可
 
 LocalMusicPlayer 自有源码按 [MIT 许可](LICENSE)发布。随程序分发的 `TagLibSharp.dll` 是独立组件，采用 LGPL-2.1-only；其许可正文见 [TagLibSharp-LICENSE.txt](TagLibSharp-LICENSE.txt)，源码见 [mono/taglib-sharp](https://github.com/mono/taglib-sharp)。两份许可证分别适用于各自的代码。
+
+## 鸣谢
+
+感谢 [匿名网友] 对本播放器的音量部分样式提出的建议，感谢 CJ_002 帮助我加上“常见问题”部分的内容。
