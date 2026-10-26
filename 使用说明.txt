@@ -1,0 +1,20 @@
+LocalMusicPlayer 1.0.0.0
+
+双击 LocalMusicPlayer.exe 启动。请将 LocalMusicPlayer.exe、LocalMusicPlayer.ps1 与 TagLibSharp.dll 保持在同一目录。
+
+界面左侧显示当前曲目的小封面、曲名、作曲家（未填写时显示艺术家）、专辑和年份；右侧是播放列表。双击曲目，或选中后按 Enter，即可指定播放。MP3、FLAC、M4A、OGG、WAV、WMA、AAC 的标签信息和内嵌封面由 TagLibSharp 读取；缺少封面时会尝试曲目所在目录中的 cover.jpg、folder.jpg 等文件，仍无封面时显示播放器图标。缺失的信息显示“未标注”。
+
+“文件”菜单可选择音乐目录、直接输入目录地址、重新扫描或退出；“关于”菜单可查看版本、作者和项目链接。首次默认扫描当前用户的 C:\Users\[用户名]\Music，包括子目录；如果该目录不存在，则使用 Windows 设置的“音乐”文件夹位置。升级安装会迁移旧配置并保留上次选择的目录。
+
+“播放模式”菜单提供：
+- 播放一遍列表：从第一首按顺序播放，到列表末尾停止。
+- 列表循环：按顺序播放，到末尾后回到第一首。
+- 播放一遍单曲：当前曲目播完后停止。
+- 单曲循环：当前曲目播完后重新播放。
+- 随机播放：每轮洗牌播放，轮内尽量不重复；首次运行默认使用此模式。
+
+底部图标按钮和任务栏缩略图按钮均依次为上一首、停止、播放/暂停、下一首。点击扬声器图标可静音或恢复音量，音量滑块的位置和百分比在静音时保持不变；调整滑块会取消静音。细滑块可调整播放进度和音量；鼠标移到音量滑块上滚动滚轮，每格调整 5%。“上一首”返回已播放曲目；手动“下一首”在单曲模式下仍会切到下一首。界面自动跟随 Windows 应用深浅色设置。
+
+程序在当前 Windows 用户的 AppData\Local\LocalMusicPlayer 中记住上次目录、音量、静音状态和播放模式。扫描 MP3、WAV、WMA、M4A、AAC、FLAC、OGG；文件能否播放取决于 Windows 已安装的媒体组件。运行要求：Windows PowerShell 5.1 和 Windows 桌面媒体组件。
+
+LocalMusicPlayer 源码由世界重构 / FlashDragon / 庚辰按 MIT 许可发布，详见 LICENSE。TagLibSharp 2.3.0 由 mono/taglib-sharp 项目提供，按 GNU LGPL 2.1 许可使用；许可正文见 TagLibSharp-LICENSE.txt，源代码：https://github.com/mono/taglib-sharp 。
