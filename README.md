@@ -20,7 +20,8 @@ LocalMusicPlayer 是一个 Windows 本地音乐播放器，版本 **1.0.0.0**。
 
 ## 常见问题
 
-1.首次启动 `LocalMusicPlayer.exe` ，系统会弹出“Windows 已保护你的电脑”窗口，如果你想使用这款播放器，直接选择“更多信息 → 仍要运行”
+1.首次启动 `LocalMusicPlayer.exe` ，系统会弹出“Windows 已保护你的电脑”窗口，如果你想使用这款播放器，直接选择“更多信息 → 仍要运行”。
+
 2.如果启动后出现类似以下内容：
 未能加载文件或程序集 `"file:///D:\AAA APP for \LocalMusicPlayer\TagLibSharp.dll'` 或它的某一个依赖项。
 不支持操作。(异常来自 `HRESULT:0×80131515`)
