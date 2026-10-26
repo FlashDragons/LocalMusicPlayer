@@ -1,4 +1,4 @@
-LocalMusicPlayer 1.0.0.1
+LocalMusicPlayer 1.0.0.2
 
 双击 LocalMusicPlayer.exe 启动。请将 LocalMusicPlayer.exe、LocalMusicPlayer.ps1 与 TagLibSharp.dll 保持在同一目录。
 

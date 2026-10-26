@@ -1184,9 +1184,11 @@ function Update-TaskbarProgress {
     $form.SetPlaybackProgress($false,$false,[uint64]0,[uint64]0)
     return
   }
-  $duration=[Math]::Max(0,$script:player.NaturalDuration.TimeSpan.Ticks)
+  $duration=[int64]$script:player.NaturalDuration.TimeSpan.Ticks
   if($duration -le 0){$form.SetPlaybackProgress($false,$false,[uint64]0,[uint64]0);return}
-  $elapsed=[Math]::Max(0,[Math]::Min($duration,$script:player.Position.Ticks))
+  $elapsed=[int64]$script:player.Position.Ticks
+  if($elapsed -lt 0){$elapsed=0}
+  if($elapsed -gt $duration){$elapsed=$duration}
   $form.SetPlaybackProgress($true,$script:paused,[uint64]$elapsed,[uint64]$duration)
 }
 
@@ -1429,6 +1431,21 @@ function Play-Next([bool]$automatic=$false) {
     $index=0
   }
   Start-Track $index
+}
+function Play-Previous {
+  if($script:tracks.Count -eq 0){return}
+  if($script:mode -eq 'random'){
+    if($script:historyPos -gt 0){
+      $script:historyPos--
+      Start-Track $script:history[$script:historyPos] $false
+    }elseif($script:current -ge 0){$script:player.Position=[TimeSpan]::Zero}
+    return
+  }
+  if($script:current -gt 0){
+    Start-Track ($script:current-1)
+  }elseif($script:current -ge 0){
+    $script:player.Position=[TimeSpan]::Zero
+  }
 }
 function Scan-Folder {
   $script:player.Stop();$script:player.Close()
@@ -1963,7 +1980,7 @@ function Show-About {
   $build.Size=[Drawing.Size]::new(620,102);$build.ForeColor=$textColor;$build.BackColor=$surface
   [void]$about.Controls.Add($build)
   $details=@(
-    @('版本','1.0.0.1'),
+    @('版本','1.0.0.2'),
     @('程序许可','MIT'),
     @('媒体标签组件','TagLibSharp 2.3.0 · LGPL-2.1-only')
   )
@@ -2013,7 +2030,7 @@ function Show-About {
   $copy.Text='复制信息';$copy.Location=[Drawing.Point]::new(20,454)
   $copy.Size=[Drawing.Size]::new(145,34)
   $copy.Add_Click({
-    $clipboardText="LocalMusicPlayer 1.0.0.1`r`n世界重构 / FlashDragon / 庚辰`r`nhttps://github.com/FlashDragons/LocalMusicPlayer"
+    $clipboardText="LocalMusicPlayer 1.0.0.2`r`n世界重构 / FlashDragon / 庚辰`r`nhttps://github.com/FlashDragons/LocalMusicPlayer"
     [Windows.Forms.Clipboard]::SetText($clipboardText)
   })
   [void]$about.Controls.Add($copy)
@@ -2054,11 +2071,7 @@ $play.Add_Click({
   }
 })
 $next.Add_Click({Play-Next})
-$prev.Add_Click({
-  if($script:historyPos -gt 0){
-    $script:historyPos--;Start-Track $script:history[$script:historyPos] $false
-  }elseif($script:current -ge 0){$script:player.Position=[TimeSpan]::Zero}
-})
+$prev.Add_Click({Play-Previous})
 $stop.Add_Click({
   $script:player.Stop();$script:playing=$false;$script:paused=$false
   Update-TransportIcons;Update-TaskbarProgress
