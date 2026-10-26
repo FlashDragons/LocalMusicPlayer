@@ -135,6 +135,14 @@ public static class PlayerDwm
         catch (DllNotFoundException) { }
         catch (EntryPointNotFoundException) { }
     }
+    public static void SetBorderColor(IntPtr handle, Color color)
+    {
+        // DWMWA_BORDER_COLOR (Windows 11); COLORREF uses BGR byte order.
+        int value = color.R | (color.G << 8) | (color.B << 16);
+        try { DwmSetWindowAttribute(handle, 34, ref value, 4); }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
     public static void SetListTheme(IntPtr handle, bool dark)
     {
         try { SetWindowTheme(handle, dark ? "DarkMode_Explorer" : "Explorer", null); }
@@ -183,8 +191,8 @@ public sealed class SlimSlider : Control
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         TrackColor = Color.FromArgb(170, 174, 180);
-        FillColor = Color.FromArgb(48, 139, 220);
-        ThumbColor = Color.FromArgb(48, 139, 220);
+        FillColor = SystemColors.Highlight;
+        ThumbColor = SystemColors.Highlight;
         Height = 25;
     }
     public int Minimum { get { return minimum; } set { minimum = value; Value = current; } }
@@ -250,6 +258,309 @@ public sealed class SlimSlider : Control
 }
 "@
 Add-Type -TypeDefinition $uiInteropSource -ReferencedAssemblies 'System.Windows.Forms.dll','System.Drawing.dll'
+$folderListSource=@'
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Windows.Forms;
+
+public sealed class FolderPresetList : ScrollableControl
+{
+    private sealed class Row
+    {
+        public string Path;
+        public float Y;
+        public Row(string path, float y) { Path = path; Y = y; }
+    }
+    private readonly List<Row> rows = new List<Row>();
+    private readonly Timer animation = new Timer();
+    private Row selected;
+    private Row dragged;
+    private int mouseDownY;
+    private int dragOffset;
+    private bool moved;
+    private const int RowHeight = 54;
+    public bool ReorderEnabled { get; set; }
+    public string ActivePath { get; set; }
+    public Color MutedColor { get; set; }
+    public Color SelectedColor { get; set; }
+    public Color ActiveColor { get; set; }
+    public Color LineColor { get; set; }
+    public event EventHandler SelectionChanged;
+    public event EventHandler OrderChanged;
+    public event EventHandler ItemActivated;
+
+    public FolderPresetList()
+    {
+        DoubleBuffered = true;
+        AutoScroll = true;
+        TabStop = true;
+        ReorderEnabled = true;
+        MutedColor = Color.Gray;
+        SelectedColor = Color.FromArgb(58, 80, 106);
+        ActiveColor = SystemColors.Highlight;
+        LineColor = Color.FromArgb(90, 90, 90);
+        animation.Interval = 16;
+        animation.Tick += delegate { AnimateRows(); };
+    }
+    public int SelectedIndex { get { return selected == null ? -1 : rows.IndexOf(selected); } }
+    public string SelectedPath { get { return selected == null ? null : selected.Path; } }
+    public string[] Paths
+    {
+        get
+        {
+            string[] values = new string[rows.Count];
+            for (int i = 0; i < rows.Count; i++) values[i] = rows[i].Path;
+            return values;
+        }
+    }
+    public void SetPaths(string[] paths)
+    {
+        string previous = SelectedPath;
+        rows.Clear();
+        selected = null;
+        dragged = null;
+        animation.Stop();
+        if (paths != null)
+        {
+            foreach (string path in paths)
+            {
+                Row row = new Row(path, rows.Count * RowHeight);
+                rows.Add(row);
+                if (previous != null && string.Equals(path, previous, StringComparison.OrdinalIgnoreCase))
+                    selected = row;
+            }
+        }
+        AutoScrollMinSize = new Size(0, rows.Count * RowHeight);
+        Invalidate();
+        OnSelectionChanged();
+    }
+    public void SelectPath(string path)
+    {
+        selected = null;
+        foreach (Row row in rows)
+            if (string.Equals(row.Path, path, StringComparison.OrdinalIgnoreCase)) { selected = row; break; }
+        Invalidate();
+        OnSelectionChanged();
+    }
+    private void OnSelectionChanged()
+    {
+        if (SelectionChanged != null) SelectionChanged(this, EventArgs.Empty);
+    }
+    private int RowAt(int y)
+    {
+        int index = (y - AutoScrollPosition.Y) / RowHeight;
+        return index >= 0 && index < rows.Count ? index : -1;
+    }
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left) return;
+        Focus();
+        int index = RowAt(e.Y);
+        selected = index < 0 ? null : rows[index];
+        dragged = ReorderEnabled ? selected : null;
+        mouseDownY = e.Y;
+        dragOffset = selected == null ? 0 : e.Y - (int)selected.Y - AutoScrollPosition.Y;
+        moved = false;
+        Capture = true;
+        Invalidate();
+        OnSelectionChanged();
+    }
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (dragged == null || e.Button != MouseButtons.Left) return;
+        if (!moved && Math.Abs(e.Y - mouseDownY) < 5) return;
+        moved = true;
+        dragged.Y = e.Y - AutoScrollPosition.Y - dragOffset;
+        int current = rows.IndexOf(dragged);
+        int target = Math.Max(0, Math.Min(rows.Count - 1,
+            (int)Math.Floor((dragged.Y + RowHeight / 2.0) / RowHeight)));
+        if (target != current)
+        {
+            rows.RemoveAt(current);
+            rows.Insert(target, dragged);
+        }
+        animation.Start();
+        Invalidate();
+    }
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        bool changed = moved;
+        dragged = null;
+        moved = false;
+        Capture = false;
+        if (changed)
+        {
+            animation.Start();
+            if (OrderChanged != null) OrderChanged(this, EventArgs.Empty);
+        }
+        base.OnMouseUp(e);
+    }
+    protected override void OnMouseDoubleClick(MouseEventArgs e)
+    {
+        base.OnMouseDoubleClick(e);
+        if (SelectedPath != null && ItemActivated != null) ItemActivated(this, EventArgs.Empty);
+    }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (rows.Count > 0 && (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down))
+        {
+            int current = SelectedIndex;
+            int next = e.KeyCode == Keys.Down ? Math.Min(rows.Count - 1, current + 1)
+                : Math.Max(0, current < 0 ? 0 : current - 1);
+            selected = rows[next];
+            int top = next * RowHeight;
+            int viewTop = -AutoScrollPosition.Y;
+            if (top < viewTop) AutoScrollPosition = new Point(0, top);
+            else if (top + RowHeight > viewTop + ClientSize.Height)
+                AutoScrollPosition = new Point(0, top + RowHeight - ClientSize.Height);
+            Invalidate();
+            OnSelectionChanged();
+            e.Handled = true;
+            return;
+        }
+        if (e.KeyCode == Keys.Enter && SelectedPath != null && ItemActivated != null)
+        {
+            ItemActivated(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
+        base.OnKeyDown(e);
+    }
+    private void AnimateRows()
+    {
+        bool pending = false;
+        for (int i = 0; i < rows.Count; i++)
+        {
+            Row row = rows[i];
+            if (row == dragged) continue;
+            float goal = i * RowHeight;
+            if (Math.Abs(row.Y - goal) > 0.6f)
+            {
+                row.Y += (goal - row.Y) * 0.32f;
+                pending = true;
+            }
+            else row.Y = goal;
+        }
+        Invalidate();
+        if (!pending && dragged == null) animation.Stop();
+    }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.Clear(BackColor);
+        for (int i = 0; i < rows.Count; i++) if (rows[i] != dragged) DrawRow(e.Graphics, rows[i]);
+        if (dragged != null) DrawRow(e.Graphics, dragged);
+    }
+    private void DrawRow(Graphics graphics, Row row)
+    {
+        int y = (int)Math.Round(row.Y) + AutoScrollPosition.Y;
+        if (y > ClientSize.Height || y + RowHeight < 0) return;
+        bool active = string.Equals(row.Path, ActivePath, StringComparison.OrdinalIgnoreCase);
+        Rectangle bounds = new Rectangle(0, y, ClientSize.Width, RowHeight);
+        Color fill = row == selected ? SelectedColor : BackColor;
+        using (SolidBrush brush = new SolidBrush(fill)) graphics.FillRectangle(brush, bounds);
+        if (active)
+            using (SolidBrush brush = new SolidBrush(ActiveColor))
+                graphics.FillRectangle(brush, 0, y + 5, 3, RowHeight - 10);
+        using (Pen pen = new Pen(LineColor))
+            graphics.DrawLine(pen, 8, y + RowHeight - 1, ClientSize.Width - 8, y + RowHeight - 1);
+        string name = System.IO.Path.GetFileName(row.Path.TrimEnd('\\'));
+        if (string.IsNullOrEmpty(name)) name = row.Path;
+        Color primary = System.IO.Directory.Exists(row.Path) ? ForeColor : MutedColor;
+        Rectangle title = new Rectangle(15, y + 4, ClientSize.Width - 28, 23);
+        Rectangle detail = new Rectangle(15, y + 27, ClientSize.Width - 28, 20);
+        TextRenderer.DrawText(graphics, name, Font, title, primary,
+            TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(graphics, row.Path, Font, detail, MutedColor,
+            TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+    }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) animation.Dispose();
+        base.Dispose(disposing);
+    }
+}
+
+public static class FolderActionGlyphs
+{
+    public static Bitmap CreateBitmap(int kind, Color color)
+    {
+        Bitmap bitmap = new Bitmap(20, 20);
+        using (Graphics graphics = Graphics.FromImage(bitmap))
+        using (Pen pen = new Pen(color, 1.8f))
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            if (kind == 0)
+            {
+                graphics.DrawLine(pen, 10, 3, 10, 17);
+                graphics.DrawLine(pen, 3, 10, 17, 10);
+            }
+            else if (kind == 1)
+            {
+                graphics.DrawLine(pen, 4, 5, 16, 5);
+                graphics.DrawLine(pen, 7, 3, 13, 3);
+                graphics.DrawRectangle(pen, 5, 7, 10, 10);
+                graphics.DrawLine(pen, 8, 9, 8, 15);
+                graphics.DrawLine(pen, 12, 9, 12, 15);
+            }
+            else
+            {
+                graphics.DrawLine(pen, 4, 15, 14, 5);
+                graphics.DrawLine(pen, 6, 17, 16, 7);
+                graphics.DrawLine(pen, 3, 17, 6, 17);
+                graphics.DrawLine(pen, 14, 5, 16, 7);
+            }
+        }
+        return bitmap;
+    }
+}
+
+public sealed class ThemedPlaylistButton : Button
+{
+    private bool over;
+    private bool down;
+    public Color HoverColor { get; set; }
+    public Color PressedColor { get; set; }
+    public Color DisabledBackColor { get; set; }
+    public Color DisabledForeColor { get; set; }
+    public Color FocusColor { get; set; }
+    public ThemedPlaylistButton()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                 ControlStyles.OptimizedDoubleBuffer, true);
+        HoverColor = Color.FromArgb(68, 72, 79);
+        PressedColor = Color.FromArgb(76, 80, 88);
+        DisabledBackColor = Color.FromArgb(46, 48, 52);
+        DisabledForeColor = Color.FromArgb(145, 150, 158);
+        FocusColor = Color.FromArgb(100, 100, 100);
+        FlatStyle = FlatStyle.Flat;
+        TabStop = true;
+    }
+    protected override void OnMouseEnter(EventArgs e) { over = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { over = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Color fill = !Enabled ? DisabledBackColor : down ? PressedColor : over ? HoverColor : BackColor;
+        using (SolidBrush brush = new SolidBrush(fill)) e.Graphics.FillRectangle(brush, ClientRectangle);
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle,
+            Enabled ? ForeColor : DisabledForeColor,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        if (Focused && Enabled)
+        {
+            using (Pen pen = new Pen(FocusColor))
+                e.Graphics.DrawRectangle(pen, 1, 1, Math.Max(0, Width - 3), Math.Max(0, Height - 3));
+        }
+    }
+}
+'@
+Add-Type -TypeDefinition $folderListSource -ReferencedAssemblies 'System.Windows.Forms.dll','System.Drawing.dll'
 $taskbarSource=@"
 using System;
 using System.Drawing;
@@ -303,6 +614,10 @@ public sealed class PlayerForm : Form
     private ThumbnailToolbar toolbar;
     private bool playing;
     private bool hasTracks;
+    private bool progressActive;
+    private bool progressPaused;
+    private ulong progressCompleted;
+    private ulong progressTotal;
     public event EventHandler<ThumbnailCommandEventArgs> ThumbnailCommand;
     public bool ThumbnailReady { get { return toolbar != null; } }
 
@@ -317,6 +632,18 @@ public sealed class PlayerForm : Form
         {
             try { toolbar.Update(playing, hasTracks); }
             catch { toolbar.Dispose(); toolbar = null; }
+        }
+    }
+    public void SetPlaybackProgress(bool active, bool paused, ulong completed, ulong total)
+    {
+        progressActive = active && total > 0;
+        progressPaused = paused;
+        progressTotal = total;
+        progressCompleted = Math.Min(completed, total);
+        if (toolbar != null)
+        {
+            try { toolbar.SetProgress(progressActive, progressPaused, progressCompleted, progressTotal); }
+            catch { }
         }
     }
 
@@ -342,6 +669,7 @@ public sealed class PlayerForm : Form
             {
                 toolbar = new ThumbnailToolbar(Handle);
                 toolbar.Add(playing, hasTracks);
+                toolbar.SetProgress(progressActive, progressPaused, progressCompleted, progressTotal);
             }
             catch
             {
@@ -368,6 +696,9 @@ internal sealed class ThumbnailToolbar : IDisposable
     private bool added;
     private bool lastPlaying;
     private bool lastAvailable;
+    private uint lastProgressState = uint.MaxValue;
+    private ulong lastCompleted = ulong.MaxValue;
+    private ulong lastTotal = ulong.MaxValue;
 
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr icon);
@@ -417,8 +748,25 @@ internal sealed class ThumbnailToolbar : IDisposable
         lastAvailable = available;
     }
 
+    public void SetProgress(bool active, bool paused, ulong completed, ulong total)
+    {
+        uint state = !active || total == 0 ? 0u : paused ? 8u : 2u;
+        if (state != lastProgressState)
+        {
+            native.SetProgressState(hwnd, state);
+            lastProgressState = state;
+        }
+        if (state != 0 && (completed != lastCompleted || total != lastTotal))
+        {
+            native.SetProgressValue(hwnd, Math.Min(completed, total), total);
+            lastCompleted = completed;
+            lastTotal = total;
+        }
+    }
+
     public void Dispose()
     {
+        try { native.SetProgressState(hwnd, 0u); } catch { }
         for (int i = 0; i < icons.Length; i++)
             if (icons[i] != IntPtr.Zero) { DestroyIcon(icons[i]); icons[i] = IntPtr.Zero; }
         if (native != null) Marshal.ReleaseComObject(native);
@@ -545,6 +893,32 @@ $script:vol=70
 $script:muted=$false
 $script:mode='random'
 $script:modeIds=@('list-once','list-loop','single-once','single-loop','random')
+$script:presets=[Collections.Generic.List[string]]::new()
+$script:recentFolders=[Collections.Generic.List[string]]::new()
+function Normalize-FolderPath([string]$candidate) {
+  if([string]::IsNullOrWhiteSpace($candidate)){return $null}
+  try {
+    $expanded=[Environment]::ExpandEnvironmentVariables($candidate.Trim().Trim('"'))
+    $full=[IO.Path]::GetFullPath($expanded)
+    $root=[IO.Path]::GetPathRoot($full)
+    if($full.Length -gt $root.Length){$full=$full.TrimEnd('\','/')}
+    return $full
+  }catch{return $null}
+}
+function Find-FolderIndex($folders,[string]$candidate) {
+  for($i=0;$i -lt $folders.Count;$i++){
+    if([string]::Equals($folders[$i],$candidate,[StringComparison]::OrdinalIgnoreCase)){return $i}
+  }
+  return -1
+}
+function Record-RecentFolder([string]$candidate) {
+  $pathToRecord=Normalize-FolderPath $candidate
+  if(-not $pathToRecord){return}
+  $existing=Find-FolderIndex $script:recentFolders $pathToRecord
+  if($existing -ge 0){$script:recentFolders.RemoveAt($existing)}
+  $script:recentFolders.Insert(0,$pathToRecord)
+  while($script:recentFolders.Count -gt 64){$script:recentFolders.RemoveAt(64)}
+}
 $settingsToRead=if([IO.File]::Exists($script:config)){$script:config}elseif([IO.File]::Exists($legacyConfig)){$legacyConfig}else{$null}
 if($settingsToRead){
   try {$s=Get-Content -LiteralPath $settingsToRead -Raw|ConvertFrom-Json
@@ -552,11 +926,22 @@ if($settingsToRead){
     if($null -ne $s.Volume){$script:vol=[Math]::Max(0,[Math]::Min(100,[int]$s.Volume))}
     if($null -ne $s.Muted){$script:muted=[bool]$s.Muted}
     if($s.Mode -and $script:modeIds -contains [string]$s.Mode){$script:mode=[string]$s.Mode}
+    foreach($folder in @($s.PresetFolders)){
+      $normalized=Normalize-FolderPath ([string]$folder)
+      if($normalized -and (Find-FolderIndex $script:presets $normalized) -lt 0){$script:presets.Add($normalized)}
+    }
+    foreach($folder in @($s.RecentFolders)){
+      $normalized=Normalize-FolderPath ([string]$folder)
+      if($normalized -and (Find-FolderIndex $script:recentFolders $normalized) -lt 0){$script:recentFolders.Add($normalized)}
+      if($script:recentFolders.Count -ge 64){break}
+    }
   }catch{}
 }
 function Save-Config {
   try {[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($script:config))
-    @{Path=$script:path;Volume=$script:vol;Muted=$script:muted;Mode=$script:mode}|ConvertTo-Json|Set-Content -LiteralPath $script:config -Encoding UTF8
+    @{Path=$script:path;Volume=$script:vol;Muted=$script:muted;Mode=$script:mode;
+      PresetFolders=$script:presets.ToArray();RecentFolders=$script:recentFolders.ToArray()}|
+      ConvertTo-Json -Depth 4|Set-Content -LiteralPath $script:config -Encoding UTF8
   }catch{}
 }
 $script:player=[Windows.Media.MediaPlayer]::new()
@@ -568,6 +953,7 @@ $script:history=[Collections.Generic.List[int]]::new()
 $script:historyPos=-1
 $script:current=-1
 $script:playing=$false
+$script:paused=$false
 $script:seeking=$false
 $extensions=@('.mp3','.wav','.wma','.m4a','.aac','.flac','.ogg')
 $form=[PlayerForm]::new()
@@ -577,7 +963,7 @@ $form.MinimumSize=[Drawing.Size]::new(760,450)
 $form.StartPosition='CenterScreen'
 $form.Font=[Drawing.Font]::new('Microsoft YaHei UI',9)
 try {
-  $iconFile=Join-Path ([AppDomain]::CurrentDomain.BaseDirectory) 'LocalMusicPlayer.exe'
+  $iconFile=Join-Path $programDir 'LocalMusicPlayer.exe'
   if([IO.File]::Exists($iconFile)){$form.Icon=[Drawing.Icon]::ExtractAssociatedIcon($iconFile)}
 } catch {}
 
@@ -591,6 +977,7 @@ $exitMenu=[Windows.Forms.ToolStripMenuItem]::new('退出')
 [void]$fileMenu.DropDownItems.Add($addressMenu)
 [void]$fileMenu.DropDownItems.Add($rescanMenu)
 [void]$fileMenu.DropDownItems.Add($exitMenu)
+$playlistMenu=[Windows.Forms.ToolStripMenuItem]::new('播放列表')
 $modeMenu=[Windows.Forms.ToolStripMenuItem]::new('播放模式')
 $modeNames=@('播放一遍列表','列表循环','播放一遍单曲','单曲循环','随机播放')
 $modeMenuItems=@()
@@ -602,6 +989,7 @@ for($i=0;$i -lt $script:modeIds.Count;$i++){
   $modeMenuItems+=,$item
 }
 [void]$menu.Items.Add($fileMenu)
+[void]$menu.Items.Add($playlistMenu)
 [void]$menu.Items.Add($modeMenu)
 $aboutMenu=[Windows.Forms.ToolStripMenuItem]::new('关于')
 [void]$menu.Items.Add($aboutMenu)
@@ -692,13 +1080,12 @@ $list.Add_DrawColumnHeader({
 })
 $list.Add_DrawItem({
   param($sender,$e)
-  $e.DrawDefault=(-not $script:themeDark)
+  $e.DrawDefault=$false
 })
 $list.Add_DrawSubItem({
   param($sender,$e)
-  if(-not $script:themeDark){$e.DrawDefault=$true;return}
-  $background=if($e.Item.Selected){[Drawing.Color]::FromArgb(0,112,204)}else{$list.BackColor}
-  $foreground=if($e.Item.Selected){[Drawing.Color]::White}else{$list.ForeColor}
+  $background=if($e.Item.Selected){$script:accent}else{$list.BackColor}
+  $foreground=if($e.Item.Selected){Get-AccentTextColor $script:accent}else{$list.ForeColor}
   $brush=[Drawing.SolidBrush]::new($background)
   try{
     $e.Graphics.FillRectangle($brush,$e.Bounds)
@@ -791,8 +1178,20 @@ function Apply-Volume {
   $script:player.Volume=if($script:muted){0.0}else{$script:vol/100.0}
   Update-VolumeIcon
 }
+function Update-TaskbarProgress {
+  if($script:current -lt 0 -or (-not $script:playing -and -not $script:paused) -or
+     -not $script:player.NaturalDuration.HasTimeSpan){
+    $form.SetPlaybackProgress($false,$false,[uint64]0,[uint64]0)
+    return
+  }
+  $duration=[Math]::Max(0,$script:player.NaturalDuration.TimeSpan.Ticks)
+  if($duration -le 0){$form.SetPlaybackProgress($false,$false,[uint64]0,[uint64]0);return}
+  $elapsed=[Math]::Max(0,[Math]::Min($duration,$script:player.Position.Ticks))
+  $form.SetPlaybackProgress($true,$script:paused,[uint64]$elapsed,[uint64]$duration)
+}
 
 $script:themeDark=$null
+$script:accent=[Drawing.SystemColors]::Highlight
 function Get-AppDarkTheme {
   try {
     $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
@@ -801,10 +1200,34 @@ function Get-AppDarkTheme {
     finally { $key.Dispose() }
   } catch { return $false }
 }
+function Get-SystemAccentColor {
+  try {
+    $type=[Windows.UI.ViewManagement.UISettings,Windows,ContentType=WindowsRuntime]
+    $settings=[Activator]::CreateInstance($type)
+    $kind=[Windows.UI.ViewManagement.UIColorType,Windows,ContentType=WindowsRuntime]::Accent
+    $color=$settings.GetColorValue($kind)
+    return [Drawing.Color]::FromArgb([int]$color.R,[int]$color.G,[int]$color.B)
+  }catch{return [Drawing.SystemColors]::Highlight}
+}
+function Blend-Color([Drawing.Color]$base,[Drawing.Color]$overlay,[double]$amount) {
+  $amount=[Math]::Max(0,[Math]::Min(1,$amount))
+  return [Drawing.Color]::FromArgb(
+    [int][Math]::Round($base.R*(1-$amount)+$overlay.R*$amount),
+    [int][Math]::Round($base.G*(1-$amount)+$overlay.G*$amount),
+    [int][Math]::Round($base.B*(1-$amount)+$overlay.B*$amount))
+}
+function Get-AccentTextColor([Drawing.Color]$color) {
+  $brightness=($color.R*299+$color.G*587+$color.B*114)/1000
+  if($brightness -gt 150){return [Drawing.Color]::FromArgb(20,22,25)}
+  return [Drawing.Color]::White
+}
 function Apply-Theme([bool]$force=$false) {
   $dark=Get-AppDarkTheme
-  if(-not $force -and $null -ne $script:themeDark -and $script:themeDark -eq $dark){return}
+  $accent=Get-SystemAccentColor
+  if(-not $force -and $null -ne $script:themeDark -and $script:themeDark -eq $dark -and
+    $script:accent.ToArgb() -eq $accent.ToArgb()){return}
   $script:themeDark=$dark
+  $script:accent=$accent
   if($dark){
     $surface=[Drawing.Color]::FromArgb(30,32,36)
     $input=[Drawing.Color]::FromArgb(42,44,49)
@@ -828,7 +1251,7 @@ function Apply-Theme([bool]$force=$false) {
   $menu.BackColor=$surface;$menu.ForeColor=$text
   $menu.Renderer=[Windows.Forms.ToolStripProfessionalRenderer]::new([PlayerMenuColors]::new($dark))
   foreach($dropDown in @($fileMenu.DropDown,$modeMenu.DropDown)){$dropDown.BackColor=$surface}
-  foreach($item in @($fileMenu,$chooseMenu,$addressMenu,$rescanMenu,$exitMenu,$modeMenu,$aboutMenu)+$modeMenuItems){
+  foreach($item in @($fileMenu,$chooseMenu,$addressMenu,$rescanMenu,$exitMenu,$playlistMenu,$modeMenu,$aboutMenu)+$modeMenuItems){
     $item.ForeColor=$text;$item.BackColor=$surface
   }
   $cover.BackColor=$input
@@ -853,9 +1276,21 @@ function Apply-Theme([bool]$force=$false) {
   foreach($slider in @($seek,$volume)){
     $slider.BackColor=$surface
     $slider.TrackColor=$track
-    $slider.FillColor=[Drawing.Color]::FromArgb(48,139,220)
-    $slider.ThumbColor=[Drawing.Color]::FromArgb(48,139,220)
+    $slider.FillColor=$script:accent
+    $slider.ThumbColor=$script:accent
     $slider.Invalidate()
+  }
+  if($script:playlistDialogContext){
+    $ctx=$script:playlistDialogContext
+    foreach($folderList in @($ctx.PresetList,$ctx.HistoryList)){
+      $folderList.ActiveColor=$script:accent
+      $folderList.SelectedColor=Blend-Color $folderList.BackColor $script:accent 0.24
+      $folderList.Invalidate()
+    }
+    foreach($buttonControl in @($ctx.HeaderButtons)+$ctx.SwitchButtons){
+      $buttonControl.FocusColor=$script:accent
+      $buttonControl.Invalidate()
+    }
   }
   if($form.IsHandleCreated){[PlayerDwm]::SetDarkTitleBar($form.Handle,$dark)}
 }
@@ -875,7 +1310,9 @@ function Reset-TrackInfo {
   $composerLabel.Text='作曲家：—'
   $albumLabel.Text='专辑：—'
   $yearLabel.Text='年份：—'
-  foreach($label in @($now,$composerLabel,$albumLabel,$yearLabel)){$toolTip.SetToolTip($label,$label.Text)}
+  foreach($label in @($now,$albumLabel)){$toolTip.SetToolTip($label,$label.Text)}
+  $toolTip.SetToolTip($composerLabel,'—')
+  $toolTip.SetToolTip($yearLabel,'—')
   $old=$cover.Image
   $cover.Image=$script:placeholderArt
   if($old -and -not [Object]::ReferenceEquals($old,$script:placeholderArt)){$old.Dispose()}
@@ -887,9 +1324,9 @@ function Set-TrackInfo([string]$filePath) {
   $albumLabel.Text='专辑：'+$info.Album
   $yearLabel.Text='年份：'+$info.Year
   $toolTip.SetToolTip($now,$info.Title)
-  $toolTip.SetToolTip($composerLabel,$composerLabel.Text)
+  $toolTip.SetToolTip($composerLabel,$info.Composer)
   $toolTip.SetToolTip($albumLabel,$info.Album)
-  $toolTip.SetToolTip($yearLabel,$yearLabel.Text)
+  $toolTip.SetToolTip($yearLabel,$info.Year)
   $toolTip.SetToolTip($cover,$filePath)
   $newArt=$script:placeholderArt
   if($info.CoverBytes){
@@ -928,7 +1365,8 @@ function Start-Track([int]$index,[bool]$remember=$true){
     $script:player.Open([Uri]::new($script:tracks[$index].FullName))
     Apply-Volume
     $script:player.Play()
-    $script:current=$index;$script:playing=$true;Update-TransportIcons
+    $script:current=$index;$script:playing=$true;$script:paused=$false
+    Update-TransportIcons;Update-TaskbarProgress
     $status.Text='正在播放  |  '+$script:tracks[$index].Name
     Set-TrackInfo $script:tracks[$index].FullName
     $list.SelectedItems.Clear()
@@ -941,13 +1379,15 @@ function Start-Track([int]$index,[bool]$remember=$true){
       }
       $script:history.Add($index);$script:historyPos=$script:history.Count-1
     }
-  }catch{$script:playing=$false;Update-TransportIcons;$status.Text='无法播放：'+$_.Exception.Message}
+  }catch{$script:playing=$false;$script:paused=$false;Update-TransportIcons;Update-TaskbarProgress;$status.Text='无法播放：'+$_.Exception.Message}
 }
 
 function Finish-Playback([bool]$listFinished=$false) {
   $script:player.Stop()
   $script:playing=$false
+  $script:paused=$false
   Update-TransportIcons
+  Update-TaskbarProgress
   $clock.Text='00:00'
   $seek.Value=0
   if($listFinished){
@@ -992,9 +1432,9 @@ function Play-Next([bool]$automatic=$false) {
 }
 function Scan-Folder {
   $script:player.Stop();$script:player.Close()
-  $script:current=-1;$script:playing=$false
+  $script:current=-1;$script:playing=$false;$script:paused=$false
   $script:bag.Clear();$script:history.Clear();$script:historyPos=-1
-  Update-TransportIcons;$clock.Text='00:00 / 00:00';$seek.Value=0
+  Update-TransportIcons;Update-TaskbarProgress;$clock.Text='00:00 / 00:00';$seek.Value=0
   Reset-TrackInfo
   $script:tracks=@()
   $list.BeginUpdate()
@@ -1016,6 +1456,17 @@ function Scan-Folder {
   $toolTip.SetToolTip($status,$script:path)
   Save-Config
 }
+function Set-MusicFolder([string]$candidate) {
+  $normalized=Normalize-FolderPath $candidate
+  if(-not $normalized -or -not [IO.Directory]::Exists($normalized)){
+    [void][Windows.Forms.MessageBox]::Show($form,"目录不存在：$candidate",'无法切换目录')
+    return $false
+  }
+  $script:path=$normalized
+  Record-RecentFolder $normalized
+  Scan-Folder
+  return $true
+}
 $chooseAction={
   $initial=$script:path
   try {
@@ -1028,7 +1479,7 @@ $chooseAction={
     if($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK){$selected=$dialog.SelectedPath}
     $dialog.Dispose()
   }
-  if($selected){$script:path=$selected;Scan-Folder}
+  if($selected){[void](Set-MusicFolder $selected)}
 }
 $chooseMenu.Add_Click($chooseAction)
 $addressMenu.Add_Click({
@@ -1068,15 +1519,407 @@ $addressMenu.Add_Click({
   $entry.SelectAll()
   if($addressDialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK){
     $candidate=[Environment]::ExpandEnvironmentVariables($entry.Text.Trim().Trim('"'))
-    if([IO.Directory]::Exists($candidate)){
-      $script:path=[IO.Path]::GetFullPath($candidate)
-      Scan-Folder
-    }else{
-      [void][Windows.Forms.MessageBox]::Show($form,"目录不存在：$candidate",'无法切换目录')
-    }
+    [void](Set-MusicFolder $candidate)
   }
   $addressDialog.Dispose()
 })
+function Prompt-PresetFolder([string]$initial,[string]$title,[Windows.Forms.Form]$owner) {
+  $dialog=[Windows.Forms.Form]::new()
+  $dialog.Text=$title
+  $dialog.ClientSize=[Drawing.Size]::new(620,154)
+  $dialog.StartPosition='CenterParent'
+  $dialog.FormBorderStyle='FixedDialog'
+  $dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
+  $dialog.ShowInTaskbar=$false;$dialog.Font=$form.Font
+  if($form.Icon){$dialog.Icon=$form.Icon}
+  $dark=[bool]$script:themeDark
+  $surface=if($dark){[Drawing.Color]::FromArgb(30,32,36)}else{[Drawing.Color]::FromArgb(248,248,248)}
+  $textColor=if($dark){[Drawing.Color]::FromArgb(238,239,242)}else{[Drawing.Color]::FromArgb(25,27,30)}
+  $fieldColor=if($dark){[Drawing.Color]::FromArgb(42,44,49)}else{[Drawing.Color]::White}
+  $buttonColor=if($dark){[Drawing.Color]::FromArgb(53,56,62)}else{[Drawing.Color]::FromArgb(240,240,240)}
+  $dialog.BackColor=$surface;$dialog.ForeColor=$textColor
+  $prompt=[Windows.Forms.Label]::new()
+  $prompt.Text='输入目录地址，或点击右侧按钮选择文件夹：'
+  $prompt.Location=[Drawing.Point]::new(16,15);$prompt.Size=[Drawing.Size]::new(570,24)
+  $entry=[Windows.Forms.TextBox]::new()
+  $entry.Text=$initial
+  $entry.Location=[Drawing.Point]::new(16,43);$entry.Size=[Drawing.Size]::new(515,29)
+  $entry.BackColor=$fieldColor;$entry.ForeColor=$textColor
+  $dialog.Tag=[pscustomobject]@{Entry=$entry;Dark=$dark}
+  $browse=[Windows.Forms.Button]::new()
+  $browse.Text='…';$browse.AccessibleName='浏览文件夹'
+  $browse.Location=[Drawing.Point]::new(540,42);$browse.Size=[Drawing.Size]::new(62,30)
+  $browse.Add_Click({
+    param($sender,$e)
+    $pickerDialog=$sender.FindForm()
+    $pickerEntry=$pickerDialog.Tag.Entry
+    $start=Normalize-FolderPath $pickerEntry.Text
+    if(-not $start -or -not [IO.Directory]::Exists($start)){$start=$script:path}
+    try{$picked=[ModernFolderPicker]::Pick($pickerDialog.Handle,$start)}
+    catch{
+      $fallback=[Windows.Forms.FolderBrowserDialog]::new()
+      $fallback.Description='选择音乐目录'
+      if([IO.Directory]::Exists($start)){$fallback.SelectedPath=$start}
+      $picked=$null
+      if($fallback.ShowDialog($pickerDialog) -eq [Windows.Forms.DialogResult]::OK){$picked=$fallback.SelectedPath}
+      $fallback.Dispose()
+    }
+    if($picked){$pickerEntry.Text=$picked}
+  })
+  $ok=[Windows.Forms.Button]::new()
+  $ok.Text='确定';$ok.Location=[Drawing.Point]::new(398,96);$ok.Size=[Drawing.Size]::new(98,34)
+  $ok.DialogResult='OK'
+  $cancel=[Windows.Forms.Button]::new()
+  $cancel.Text='取消';$cancel.Location=[Drawing.Point]::new(504,96);$cancel.Size=[Drawing.Size]::new(98,34)
+  $cancel.DialogResult='Cancel'
+  foreach($buttonControl in @($browse,$ok,$cancel)){
+    $buttonControl.FlatStyle='Flat';$buttonControl.UseVisualStyleBackColor=$false
+    $buttonControl.BackColor=$buttonColor;$buttonControl.ForeColor=$textColor
+  }
+  $dialog.AcceptButton=$ok;$dialog.CancelButton=$cancel
+  [void]$dialog.Controls.AddRange([Windows.Forms.Control[]]@($prompt,$entry,$browse,$ok,$cancel))
+  $dialog.Add_HandleCreated({param($sender,$e)
+    [PlayerDwm]::SetDarkTitleBar($sender.Handle,[bool]$sender.Tag.Dark)
+  })
+  $dialog.Add_Shown({param($sender,$e)
+    [PlayerDwm]::SetDarkTitleBar($sender.Handle,[bool]$sender.Tag.Dark)
+    $sender.Tag.Entry.Focus();$sender.Tag.Entry.SelectAll()
+  })
+  $result=$null
+  try{
+    if($dialog.ShowDialog($owner) -eq [Windows.Forms.DialogResult]::OK){
+      $result=Normalize-FolderPath $entry.Text
+      if(-not $result -or -not [IO.Directory]::Exists($result)){
+        [void][Windows.Forms.MessageBox]::Show($owner,"目录不存在：$($entry.Text)",'无效的文件夹')
+        $result=$null
+      }
+    }
+  }finally{$dialog.Dispose()}
+  return $result
+}
+function Confirm-DeletePreset([string]$folder,[Windows.Forms.Form]$owner) {
+  $dialog=[Windows.Forms.Form]::new()
+  $dialog.Text='确认删除预设'
+  $dialog.ClientSize=[Drawing.Size]::new(450,170)
+  $dialog.StartPosition='CenterParent'
+  $dialog.FormBorderStyle='FixedDialog'
+  $dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
+  $dialog.ShowInTaskbar=$false;$dialog.Font=$form.Font
+  if($form.Icon){$dialog.Icon=$form.Icon}
+  $dark=[bool]$script:themeDark
+  $surface=if($dark){[Drawing.Color]::FromArgb(30,32,36)}else{[Drawing.Color]::FromArgb(248,248,248)}
+  $textColor=if($dark){[Drawing.Color]::FromArgb(238,239,242)}else{[Drawing.Color]::FromArgb(25,27,30)}
+  $mutedColor=if($dark){[Drawing.Color]::FromArgb(181,185,193)}else{[Drawing.Color]::FromArgb(85,85,85)}
+  $buttonColor=if($dark){[Drawing.Color]::FromArgb(53,56,62)}else{[Drawing.Color]::FromArgb(235,235,235)}
+  $dialog.BackColor=$surface;$dialog.ForeColor=$textColor
+  $dialog.Tag=[pscustomobject]@{Dark=$dark;Border=$surface}
+  $question=[Windows.Forms.Label]::new()
+  $question.Text='从“我的播放列表”中删除这个文件夹预设？'
+  $question.Location=[Drawing.Point]::new(18,20);$question.Size=[Drawing.Size]::new(410,30)
+  $question.ForeColor=$textColor
+  $pathLabel=[Windows.Forms.Label]::new()
+  $pathLabel.Text=$folder;$pathLabel.AutoEllipsis=$true
+  $pathLabel.Location=[Drawing.Point]::new(18,58);$pathLabel.Size=[Drawing.Size]::new(410,28)
+  $pathLabel.ForeColor=$mutedColor
+  $cancel=[ThemedPlaylistButton]::new()
+  $cancel.Text='取消';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel
+  $cancel.Location=[Drawing.Point]::new(332,112);$cancel.Size=[Drawing.Size]::new(100,36)
+  $cancel.BackColor=$buttonColor;$cancel.ForeColor=$textColor
+  $delete=[ThemedPlaylistButton]::new()
+  $delete.Text='删除预设';$delete.DialogResult=[Windows.Forms.DialogResult]::Yes
+  $delete.Location=[Drawing.Point]::new(216,112);$delete.Size=[Drawing.Size]::new(108,36)
+  $delete.BackColor=if($dark){[Drawing.Color]::FromArgb(94,51,55)}else{[Drawing.Color]::FromArgb(245,217,219)}
+  $delete.ForeColor=$textColor
+  $delete.HoverColor=if($dark){[Drawing.Color]::FromArgb(111,61,66)}else{[Drawing.Color]::FromArgb(237,197,201)}
+  $dialog.CancelButton=$cancel
+  [void]$dialog.Controls.AddRange([Windows.Forms.Control[]]@($question,$pathLabel,$delete,$cancel))
+  $dialog.Add_HandleCreated({param($sender,$e)
+    [PlayerDwm]::SetDarkTitleBar($sender.Handle,[bool]$sender.Tag.Dark)
+    [PlayerDwm]::SetBorderColor($sender.Handle,$sender.Tag.Border)
+  })
+  try{return ($dialog.ShowDialog($owner) -eq [Windows.Forms.DialogResult]::Yes)}
+  finally{$dialog.Dispose()}
+}
+function New-FolderActionButton([int]$kind,[string]$name,[Drawing.Color]$color,[Drawing.Color]$background) {
+  $button=[Windows.Forms.Button]::new()
+  $button.Size=[Drawing.Size]::new(36,34)
+  $button.Margin=[Windows.Forms.Padding]::new(0,1,8,0)
+  $button.Image=[FolderActionGlyphs]::CreateBitmap($kind,$color)
+  $button.ImageAlign='MiddleCenter'
+  $button.AccessibleName=$name
+  $button.FlatStyle='Flat';$button.UseVisualStyleBackColor=$false
+  $button.FlatAppearance.BorderSize=0
+  $button.BackColor=$background;$button.ForeColor=$color
+  return $button
+}
+function Select-PlaylistPage([int]$index) {
+  $ctx=$script:playlistDialogContext
+  if(-not $ctx){return}
+  for($i=0;$i -lt 2;$i++){
+    $selected=($i -eq $index)
+    $ctx.PagePanels[$i].Visible=$selected
+    $ctx.HeaderButtons[$i].BackColor=if($selected){$ctx.InputColor}else{$ctx.SurfaceColor}
+    $ctx.HeaderButtons[$i].Invalidate()
+  }
+  $ctx.PagePanels[$index].BringToFront()
+}
+function Show-PlaylistWindow {
+  $window=[Windows.Forms.Form]::new()
+  $window.Text='播放列表'
+  $window.ClientSize=[Drawing.Size]::new(760,520)
+  $window.MinimumSize=[Drawing.Size]::new(610,400)
+  $window.StartPosition='CenterParent'
+  $window.ShowInTaskbar=$false
+  $window.Font=$form.Font
+  if($form.Icon){$window.Icon=$form.Icon}
+  $dark=[bool]$script:themeDark
+  $surface=if($dark){[Drawing.Color]::FromArgb(30,32,36)}else{[Drawing.Color]::FromArgb(248,248,248)}
+  $input=if($dark){[Drawing.Color]::FromArgb(42,44,49)}else{[Drawing.Color]::White}
+  $buttonColor=if($dark){[Drawing.Color]::FromArgb(53,56,62)}else{[Drawing.Color]::FromArgb(240,240,240)}
+  $textColor=if($dark){[Drawing.Color]::FromArgb(238,239,242)}else{[Drawing.Color]::FromArgb(25,27,30)}
+  $mutedColor=if($dark){[Drawing.Color]::FromArgb(181,185,193)}else{[Drawing.Color]::FromArgb(90,90,90)}
+  $selectedColor=Blend-Color $input $script:accent $(if($dark){0.24}else{0.18})
+  $lineColor=if($dark){[Drawing.Color]::FromArgb(68,72,79)}else{[Drawing.Color]::FromArgb(218,221,226)}
+  $window.BackColor=$surface;$window.ForeColor=$textColor
+  $shell=[Windows.Forms.TableLayoutPanel]::new()
+  $shell.Dock='Fill';$shell.ColumnCount=1;$shell.RowCount=2
+  $shell.Margin=[Windows.Forms.Padding]::new(0)
+  [void]$shell.RowStyles.Add([Windows.Forms.RowStyle]::new('Absolute',38))
+  [void]$shell.RowStyles.Add([Windows.Forms.RowStyle]::new('Percent',100))
+  $shell.BackColor=$surface
+  $tabHeader=[Windows.Forms.FlowLayoutPanel]::new()
+  $tabHeader.Dock='Fill';$tabHeader.WrapContents=$false
+  $tabHeader.Margin=[Windows.Forms.Padding]::new(0)
+  $tabHeader.BackColor=$surface
+  $tabButtons=@()
+  foreach($title in @('我的播放列表','历史播放列表')){
+    $tabButton=[ThemedPlaylistButton]::new()
+    $tabButton.Text=$title;$tabButton.Size=[Drawing.Size]::new(154,36)
+    $tabButton.Margin=[Windows.Forms.Padding]::new(0)
+    $tabButton.BackColor=$surface;$tabButton.ForeColor=$textColor
+    $tabButton.HoverColor=$buttonColor;$tabButton.PressedColor=$input
+    $tabButton.FocusColor=$script:accent
+    [void]$tabHeader.Controls.Add($tabButton)
+    $tabButtons+=,$tabButton
+  }
+  $tabButtons[0].BackColor=$input
+  $pageHost=[Windows.Forms.Panel]::new()
+  $pageHost.Dock='Fill';$pageHost.Margin=[Windows.Forms.Padding]::new(0)
+  $pageHost.BackColor=$surface
+  $presetPage=[Windows.Forms.Panel]::new()
+  $historyPage=[Windows.Forms.Panel]::new()
+  foreach($page in @($presetPage,$historyPage)){
+    $page.Dock='Fill';$page.BackColor=$surface;$page.ForeColor=$textColor
+    [void]$pageHost.Controls.Add($page)
+  }
+  $historyPage.Visible=$false
+  [void]$shell.Controls.Add($tabHeader,0,0)
+  [void]$shell.Controls.Add($pageHost,0,1)
+  [void]$window.Controls.Add($shell)
+  $playlistToolTip=[Windows.Forms.ToolTip]::new()
+  $layouts=@()
+  foreach($page in @($presetPage,$historyPage)){
+    $layout=[Windows.Forms.TableLayoutPanel]::new()
+    $layout.Dock='Fill';$layout.ColumnCount=1;$layout.RowCount=3
+    $layout.Padding=[Windows.Forms.Padding]::new(10,12,10,8)
+    [void]$layout.RowStyles.Add([Windows.Forms.RowStyle]::new('Absolute',42))
+    [void]$layout.RowStyles.Add([Windows.Forms.RowStyle]::new('Percent',100))
+    [void]$layout.RowStyles.Add([Windows.Forms.RowStyle]::new('Absolute',52))
+    $layout.BackColor=$surface
+    [void]$page.Controls.Add($layout)
+    $layouts+=,$layout
+  }
+  $presetToolbar=[Windows.Forms.FlowLayoutPanel]::new()
+  $presetToolbar.Dock='Fill';$presetToolbar.WrapContents=$false
+  $presetToolbar.BackColor=$surface
+  $addButton=New-FolderActionButton 0 '添加文件夹' $textColor $buttonColor
+  $deleteButton=New-FolderActionButton 1 '删除预设' $textColor $buttonColor
+  $editButton=New-FolderActionButton 2 '修改目录' $textColor $buttonColor
+  foreach($control in @($addButton,$deleteButton,$editButton)){
+    [void]$presetToolbar.Controls.Add($control)
+    $playlistToolTip.SetToolTip($control,$control.AccessibleName)
+  }
+  $dragHint=[Windows.Forms.Label]::new()
+  $dragHint.Text='拖动项目可调整顺序';$dragHint.AutoSize=$true
+  $dragHint.ForeColor=$mutedColor;$dragHint.Margin=[Windows.Forms.Padding]::new(10,9,0,0)
+  [void]$presetToolbar.Controls.Add($dragHint)
+  [void]$layouts[0].Controls.Add($presetToolbar,0,0)
+  $historyToolbar=[Windows.Forms.FlowLayoutPanel]::new()
+  $historyToolbar.Dock='Fill';$historyToolbar.WrapContents=$false
+  $historyToolbar.BackColor=$surface
+  $deleteHistoryButton=New-FolderActionButton 1 '删除历史记录' $textColor $buttonColor
+  [void]$historyToolbar.Controls.Add($deleteHistoryButton)
+  $playlistToolTip.SetToolTip($deleteHistoryButton,'删除历史记录')
+  $historyHint=[Windows.Forms.Label]::new()
+  $historyHint.Text='最近使用的目录，最多 64 条';$historyHint.AutoSize=$true
+  $historyHint.ForeColor=$mutedColor;$historyHint.Margin=[Windows.Forms.Padding]::new(10,9,0,0)
+  [void]$historyToolbar.Controls.Add($historyHint)
+  [void]$layouts[1].Controls.Add($historyToolbar,0,0)
+  $presetList=[FolderPresetList]::new()
+  $presetList.Dock='Fill';$presetList.Margin=[Windows.Forms.Padding]::new(0,0,0,0)
+  $presetList.BackColor=$input;$presetList.ForeColor=$textColor
+  $presetList.MutedColor=$mutedColor;$presetList.SelectedColor=$selectedColor
+  $presetList.LineColor=$lineColor;$presetList.ActiveColor=$script:accent
+  $presetList.ActivePath=$script:path
+  $presetList.Add_HandleCreated({param($sender,$e)
+    [PlayerDwm]::SetListTheme($sender.Handle,[bool]$script:themeDark)
+  })
+  $presetList.SetPaths($script:presets.ToArray())
+  [void]$layouts[0].Controls.Add($presetList,0,1)
+  $historyList=[FolderPresetList]::new()
+  $historyList.Dock='Fill';$historyList.Margin=[Windows.Forms.Padding]::new(0,0,0,0)
+  $historyList.BackColor=$input;$historyList.ForeColor=$textColor
+  $historyList.MutedColor=$mutedColor;$historyList.SelectedColor=$selectedColor
+  $historyList.LineColor=$lineColor;$historyList.ActiveColor=$script:accent
+  $historyList.ReorderEnabled=$false;$historyList.ActivePath=$script:path
+  $historyList.Add_HandleCreated({param($sender,$e)
+    [PlayerDwm]::SetListTheme($sender.Handle,[bool]$script:themeDark)
+  })
+  $historyList.SetPaths($script:recentFolders.ToArray())
+  [void]$layouts[1].Controls.Add($historyList,0,1)
+  $footers=@()
+  $switchButtons=@()
+  $countLabels=@()
+  for($i=0;$i -lt 2;$i++){
+    $footer=[Windows.Forms.TableLayoutPanel]::new()
+    $footer.Dock='Fill';$footer.ColumnCount=2;$footer.RowCount=1
+    [void]$footer.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Percent',100))
+    [void]$footer.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Absolute',160))
+    $footer.BackColor=$surface
+    $count=[Windows.Forms.Label]::new()
+    $count.Dock='Fill';$count.TextAlign='MiddleLeft';$count.ForeColor=$mutedColor
+    $count.Text=if($i -eq 0){"共 $($script:presets.Count) 个预设"}else{"共 $($script:recentFolders.Count) 条记录"}
+    [void]$footer.Controls.Add($count,0,0)
+    $switch=[ThemedPlaylistButton]::new()
+    $switch.Text='切换到此目录';$switch.Dock='Fill'
+    $switch.Margin=[Windows.Forms.Padding]::new(0,8,0,7)
+    $switch.BackColor=$buttonColor;$switch.ForeColor=$textColor
+    $switch.DisabledBackColor=if($dark){[Drawing.Color]::FromArgb(43,45,49)}else{[Drawing.Color]::FromArgb(232,232,232)}
+    $switch.DisabledForeColor=if($dark){[Drawing.Color]::FromArgb(139,144,152)}else{[Drawing.Color]::FromArgb(125,125,125)}
+    $switch.HoverColor=if($dark){[Drawing.Color]::FromArgb(68,72,79)}else{[Drawing.Color]::FromArgb(226,234,244)}
+    $switch.PressedColor=if($dark){[Drawing.Color]::FromArgb(76,80,88)}else{[Drawing.Color]::FromArgb(212,224,238)}
+    $switch.FocusColor=$script:accent
+    $switch.Enabled=$false
+    [void]$footer.Controls.Add($switch,1,0)
+    [void]$layouts[$i].Controls.Add($footer,0,2)
+    $footers+=,$footer;$switchButtons+=,$switch;$countLabels+=,$count
+  }
+  $script:playlistDialogContext=[pscustomobject]@{
+    Window=$window;PresetList=$presetList;HistoryList=$historyList
+    AddButton=$addButton;DeleteButton=$deleteButton;EditButton=$editButton
+    DeleteHistoryButton=$deleteHistoryButton;SwitchButtons=$switchButtons
+    CountLabels=$countLabels;Dark=$dark;PagePanels=@($presetPage,$historyPage)
+    HeaderButtons=$tabButtons;SurfaceColor=$surface;InputColor=$input
+  }
+  $tabButtons[0].Add_Click({Select-PlaylistPage 0})
+  $tabButtons[1].Add_Click({Select-PlaylistPage 1})
+  $presetList.Add_SelectionChanged({
+    $ctx=$script:playlistDialogContext
+    $hasSelection=($null -ne $ctx.PresetList.SelectedPath)
+    $ctx.DeleteButton.Enabled=$hasSelection;$ctx.EditButton.Enabled=$hasSelection
+    $ctx.SwitchButtons[0].Enabled=$hasSelection
+  })
+  $historyList.Add_SelectionChanged({
+    $ctx=$script:playlistDialogContext
+    $hasSelection=($null -ne $ctx.HistoryList.SelectedPath)
+    $ctx.DeleteHistoryButton.Enabled=$hasSelection;$ctx.SwitchButtons[1].Enabled=$hasSelection
+  })
+  $deleteButton.Enabled=$false;$editButton.Enabled=$false;$deleteHistoryButton.Enabled=$false
+  $addButton.Add_Click({
+    $ctx=$script:playlistDialogContext
+    $chosen=Prompt-PresetFolder $script:path '添加播放列表文件夹' $ctx.Window
+    if(-not $chosen){return}
+    if((Find-FolderIndex $script:presets $chosen) -lt 0){$script:presets.Add($chosen);Save-Config}
+    $ctx.PresetList.SetPaths($script:presets.ToArray())
+    $ctx.PresetList.SelectPath($chosen)
+    $ctx.CountLabels[0].Text="共 $($script:presets.Count) 个预设"
+  })
+  $deleteButton.Add_Click({
+    $ctx=$script:playlistDialogContext
+    $selected=$ctx.PresetList.SelectedPath
+    if(-not $selected){return}
+    if(-not (Confirm-DeletePreset $selected $ctx.Window)){return}
+    $index=Find-FolderIndex $script:presets $selected
+    if($index -ge 0){$script:presets.RemoveAt($index);Save-Config}
+    $ctx.PresetList.SetPaths($script:presets.ToArray())
+    $ctx.CountLabels[0].Text="共 $($script:presets.Count) 个预设"
+  })
+  $editButton.Add_Click({
+    $ctx=$script:playlistDialogContext
+    $previous=$ctx.PresetList.SelectedPath
+    if(-not $previous){return}
+    $chosen=Prompt-PresetFolder $previous '修改播放列表文件夹' $ctx.Window
+    if(-not $chosen){return}
+    $index=Find-FolderIndex $script:presets $previous
+    if($index -lt 0){return}
+    $duplicate=Find-FolderIndex $script:presets $chosen
+    if($duplicate -ge 0 -and $duplicate -ne $index){
+      [void][Windows.Forms.MessageBox]::Show($ctx.Window,'该目录已在我的播放列表中。','无法重复添加')
+      return
+    }
+    $script:presets[$index]=$chosen
+    Save-Config
+    $ctx.PresetList.SetPaths($script:presets.ToArray())
+    $ctx.PresetList.SelectPath($chosen)
+    if([string]::Equals($script:path,$previous,[StringComparison]::OrdinalIgnoreCase)){
+      [void](Set-MusicFolder $chosen)
+      $ctx.PresetList.ActivePath=$script:path;$ctx.HistoryList.ActivePath=$script:path
+      $ctx.PresetList.Invalidate();$ctx.HistoryList.Invalidate()
+      $ctx.HistoryList.SetPaths($script:recentFolders.ToArray())
+      $ctx.CountLabels[1].Text="共 $($script:recentFolders.Count) 条记录"
+    }
+  })
+  $presetList.Add_OrderChanged({
+    $ctx=$script:playlistDialogContext
+    $script:presets.Clear()
+    foreach($path in $ctx.PresetList.Paths){$script:presets.Add($path)}
+    Save-Config
+  })
+  $deleteHistoryButton.Add_Click({
+    $ctx=$script:playlistDialogContext
+    $selected=$ctx.HistoryList.SelectedPath
+    if(-not $selected){return}
+    $index=Find-FolderIndex $script:recentFolders $selected
+    if($index -ge 0){$script:recentFolders.RemoveAt($index);Save-Config}
+    $ctx.HistoryList.SetPaths($script:recentFolders.ToArray())
+    $ctx.CountLabels[1].Text="共 $($script:recentFolders.Count) 条记录"
+  })
+  $activatePreset={
+    $ctx=$script:playlistDialogContext
+    if($ctx.PresetList.SelectedPath -and (Set-MusicFolder $ctx.PresetList.SelectedPath)){$ctx.Window.Close()}
+  }
+  $activateHistory={
+    $ctx=$script:playlistDialogContext
+    if($ctx.HistoryList.SelectedPath -and (Set-MusicFolder $ctx.HistoryList.SelectedPath)){$ctx.Window.Close()}
+  }
+  $switchButtons[0].Add_Click($activatePreset)
+  $switchButtons[1].Add_Click($activateHistory)
+  $presetList.Add_ItemActivated($activatePreset)
+  $historyList.Add_ItemActivated($activateHistory)
+  $presetList.Add_KeyDown({param($sender,$e)
+    if($e.KeyCode -eq [Windows.Forms.Keys]::Delete){$script:playlistDialogContext.DeleteButton.PerformClick();$e.Handled=$true}
+  })
+  $historyList.Add_KeyDown({param($sender,$e)
+    if($e.KeyCode -eq [Windows.Forms.Keys]::Delete){$script:playlistDialogContext.DeleteHistoryButton.PerformClick();$e.Handled=$true}
+  })
+  $window.Add_HandleCreated({param($sender,$e)
+    [PlayerDwm]::SetDarkTitleBar($sender.Handle,[bool]$script:playlistDialogContext.Dark)
+    [PlayerDwm]::SetBorderColor($sender.Handle,$script:playlistDialogContext.SurfaceColor)
+  })
+  $window.Add_Shown({param($sender,$e)
+    [PlayerDwm]::SetDarkTitleBar($sender.Handle,[bool]$script:playlistDialogContext.Dark)
+    [PlayerDwm]::SetBorderColor($sender.Handle,$script:playlistDialogContext.SurfaceColor)
+  })
+  try{[void]$window.ShowDialog($form)}
+  finally{
+    $script:playlistDialogContext=$null
+    foreach($button in @($addButton,$deleteButton,$editButton,$deleteHistoryButton)){
+      if($button.Image){$button.Image.Dispose();$button.Image=$null}
+    }
+    $playlistToolTip.Dispose();$window.Dispose()
+  }
+}
+$playlistMenu.Add_Click({Show-PlaylistWindow})
 $rescanMenu.Add_Click({Scan-Folder})
 $exitMenu.Add_Click({$form.Close()})
 function Show-About {
@@ -1120,7 +1963,7 @@ function Show-About {
   $build.Size=[Drawing.Size]::new(620,102);$build.ForeColor=$textColor;$build.BackColor=$surface
   [void]$about.Controls.Add($build)
   $details=@(
-    @('版本','1.0.0.0'),
+    @('版本','1.0.0.1'),
     @('程序许可','MIT'),
     @('媒体标签组件','TagLibSharp 2.3.0 · LGPL-2.1-only')
   )
@@ -1155,8 +1998,8 @@ function Show-About {
     $link.Text=$links[$i].Address;$link.Tag=$links[$i].Url
     $link.Location=[Drawing.Point]::new(145,25+31*$i)
     $link.Size=[Drawing.Size]::new(455,25)
-    $link.LinkColor=[Drawing.Color]::FromArgb(73,158,236)
-    $link.ActiveLinkColor=[Drawing.Color]::FromArgb(117,191,255)
+    $link.LinkColor=$script:accent
+    $link.ActiveLinkColor=Blend-Color $script:accent $textColor 0.3
     $link.VisitedLinkColor=$link.LinkColor
     $link.Add_LinkClicked({param($sender,$eventArgs) [void][Diagnostics.Process]::Start([string]$sender.Tag)})
     [void]$contacts.Controls.Add($link)
@@ -1170,7 +2013,7 @@ function Show-About {
   $copy.Text='复制信息';$copy.Location=[Drawing.Point]::new(20,454)
   $copy.Size=[Drawing.Size]::new(145,34)
   $copy.Add_Click({
-    $clipboardText="LocalMusicPlayer 1.0.0.0`r`n世界重构 / FlashDragon / 庚辰`r`nhttps://github.com/FlashDragons/LocalMusicPlayer"
+    $clipboardText="LocalMusicPlayer 1.0.0.1`r`n世界重构 / FlashDragon / 庚辰`r`nhttps://github.com/FlashDragons/LocalMusicPlayer"
     [Windows.Forms.Clipboard]::SetText($clipboardText)
   })
   [void]$about.Controls.Add($copy)
@@ -1202,9 +2045,11 @@ foreach($modeItem in $modeMenuItems){
 $play.Add_Click({
   if($script:current -lt 0){Play-Next}
   elseif($script:playing){
-    $script:player.Pause();$script:playing=$false;Update-TransportIcons;$status.Text='已暂停'
+    $script:player.Pause();$script:playing=$false;$script:paused=$true
+    Update-TransportIcons;Update-TaskbarProgress;$status.Text='已暂停'
   }else{
-    $script:player.Play();$script:playing=$true;Update-TransportIcons
+    $script:player.Play();$script:playing=$true;$script:paused=$false
+    Update-TransportIcons;Update-TaskbarProgress
     $status.Text='正在播放  |  '+$script:tracks[$script:current].Name
   }
 })
@@ -1215,7 +2060,8 @@ $prev.Add_Click({
   }elseif($script:current -ge 0){$script:player.Position=[TimeSpan]::Zero}
 })
 $stop.Add_Click({
-  $script:player.Stop();$script:playing=$false;Update-TransportIcons
+  $script:player.Stop();$script:playing=$false;$script:paused=$false
+  Update-TransportIcons;Update-TaskbarProgress
   $clock.Text='00:00 / 00:00';$seek.Value=0;$status.Text='已停止'
 })
 $form.Add_ThumbnailCommand({
@@ -1271,14 +2117,15 @@ $seek.Add_MouseUp({
   if($script:current -ge 0 -and $script:player.NaturalDuration.HasTimeSpan){
     $seconds=$script:player.NaturalDuration.TimeSpan.TotalSeconds
     $script:player.Position=[TimeSpan]::FromSeconds($seconds*$seek.Value/1000.0)
+    Update-TaskbarProgress
   }
   $script:seeking=$false
 })
-$script:player.Add_MediaOpened({Apply-Volume})
+$script:player.Add_MediaOpened({Apply-Volume;Update-TaskbarProgress})
 $script:player.Add_MediaEnded({Play-Next $true})
 $script:player.Add_MediaFailed({
   param($sender,$args)
-  $script:playing=$false;Update-TransportIcons
+  $script:playing=$false;$script:paused=$false;Update-TransportIcons;Update-TaskbarProgress
   $status.Text='播放失败：'+$args.ErrorException.Message
 })
 $timer=[Windows.Forms.Timer]::new();$timer.Interval=500
@@ -1287,6 +2134,7 @@ $timer.Add_Tick({
   $script:themePoll++
   if($script:themePoll -ge 4){$script:themePoll=0;Apply-Theme}
   $form.SetThumbnailState($script:playing,($script:tracks.Count -gt 0))
+  Update-TaskbarProgress
   if($script:current -lt 0){return}
   $p=$script:player.Position
   if($script:player.NaturalDuration.HasTimeSpan){
@@ -1323,6 +2171,7 @@ $form.Add_FormClosing({
   if($script:placeholderArt){$script:placeholderArt.Dispose()}
 })
 Apply-Theme
+if([IO.Directory]::Exists($script:path)){Record-RecentFolder $script:path}
 Scan-Folder
 $timer.Start()
 [void]$form.ShowDialog()

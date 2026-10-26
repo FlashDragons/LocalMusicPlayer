@@ -14,8 +14,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("LocalMusicPlayer")]
 [assembly: AssemblyCompany("FlashDragon")]
 [assembly: AssemblyCopyright("Copyright © 2026 FlashDragon (世界重构 / 庚辰)")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.0.1")]
+[assembly: AssemblyFileVersion("1.0.0.1")]
 
 internal static class LocalMusicPlayerHost
 {

@@ -1,6 +1,6 @@
 # LocalMusicPlayer
 
-LocalMusicPlayer 是一个 Windows 本地音乐播放器，版本 **1.0.0.0**。支持播放列表、专辑封面和标签信息、五种播放模式、任务栏缩略图控制，以及跟随系统的深浅色主题。
+LocalMusicPlayer 是一个 Windows 本地音乐播放器。支持文件夹播放列表预设和历史记录、专辑封面和标签信息、五种播放模式、任务栏缩略图控制与播放进度，以及跟随系统的深浅色主题和强调色。
 由 ChatGPT 制作。
 
 所有者：**世界重构 / FlashDragon / 庚辰**（同一人）
@@ -14,7 +14,7 @@ LocalMusicPlayer 是一个 Windows 本地音乐播放器，版本 **1.0.0.0**。
 
 将 `LocalMusicPlayer.exe`、`LocalMusicPlayer.ps1` 和 `TagLibSharp.dll` 放在同一目录，双击 EXE 启动。完整操作见 `使用说明.txt`。
 
-首次启动默认扫描 `%USERPROFILE%\Music`，在大多数电脑上即 `C:\Users\[用户名]\Music`。如果这个目录不存在，则改用 Windows 的“音乐”文件夹位置。程序会递归扫描音乐文件。配置文件位于 `%LOCALAPPDATA%\LocalMusicPlayer\settings.json`，保留上次选择的目录和播放设置。
+首次启动默认扫描 `%USERPROFILE%\Music`，在大多数电脑上即 `C:\Users\[用户名]\Music`。如果这个目录不存在，则改用 Windows 的“音乐”文件夹位置。程序会递归扫描音乐文件。顶部“播放列表”打开独立窗口，可管理文件夹预设并从最近 64 条历史目录中切换。配置文件位于 `%LOCALAPPDATA%\LocalMusicPlayer\settings.json`，保留上次选择的目录、文件夹列表和播放设置。
 
 运行环境为 Windows PowerShell 5.1、.NET Framework 4.6.2 或更高版本，以及 Windows 桌面媒体组件。支持扫描 MP3、WAV、WMA、M4A、AAC、FLAC、OGG；实际解码能力取决于 Windows 媒体组件。
 
@@ -39,4 +39,4 @@ LocalMusicPlayer 自有源码按 [MIT 许可](LICENSE)发布。随程序分发�
 
 ## 鸣谢
 
-感谢 [匿名网友] 对本播放器的音量部分样式提出的建议，感谢 CJ_002 帮助我加上“常见问题”部分的内容。
+感谢 [匿名网友] 对本播放器的音量部分样式提出的建议，感谢 CJ_002 帮助我加上“常见问题”部分的内容以及提出播放列表相关功能的建议。
