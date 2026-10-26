@@ -13,7 +13,7 @@ LocalMusicPlayer 是一个 Windows 本地音乐播放器，版本 **1.0.0.0**。
 
 将 `LocalMusicPlayer.exe`、`LocalMusicPlayer.ps1` 和 `TagLibSharp.dll` 放在同一目录，双击 EXE 启动。完整操作见 `使用说明.txt`。
 
-首次启动默认扫描 `%USERPROFILE%\Music`，在大多数电脑上即 `C:\Users\[用户名]\Music`。如果这个目录不存在，则改用 Windows 的“音乐”文件夹位置。程序会递归扫描音乐文件。旧版 RandomMusicPlayer 的配置首次启动时会迁移到 `%LOCALAPPDATA%\LocalMusicPlayer\settings.json`，保留上次选择的目录和播放设置。
+首次启动默认扫描 `%USERPROFILE%\Music`，在大多数电脑上即 `C:\Users\[用户名]\Music`。如果这个目录不存在，则改用 Windows 的“音乐”文件夹位置。程序会递归扫描音乐文件。配置文件位于 `%LOCALAPPDATA%\LocalMusicPlayer\settings.json`，保留上次选择的目录和播放设置。
 
 运行环境为 Windows PowerShell 5.1、.NET Framework 4.6.2 或更高版本，以及 Windows 桌面媒体组件。支持扫描 MP3、WAV、WMA、M4A、AAC、FLAC、OGG；实际解码能力取决于 Windows 媒体组件。
 
