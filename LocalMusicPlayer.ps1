@@ -127,6 +127,13 @@ public static class PlayerDwm
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
     private static extern int SetWindowTheme(IntPtr hwnd, string appName, string idList);
+    [DllImport("user32.dll")]
+    private static extern bool ShowScrollBar(IntPtr hwnd, int bar, bool show);
+
+    public static void HideHorizontalScroll(IntPtr handle)
+    {
+        ShowScrollBar(handle, 0, false); // SB_HORZ
+    }
 
     public static void SetDarkTitleBar(IntPtr handle, bool dark)
     {
@@ -271,6 +278,7 @@ public sealed class FolderPresetList : ScrollableControl
     {
         public string Path;
         public float Y;
+        public bool Checked;
         public Row(string path, float y) { Path = path; Y = y; }
     }
     private readonly List<Row> rows = new List<Row>();
@@ -282,9 +290,11 @@ public sealed class FolderPresetList : ScrollableControl
     private bool moved;
     private const int RowHeight = 54;
     public bool ReorderEnabled { get; set; }
+    public bool CheckEnabled { get; set; }
     public string ActivePath { get; set; }
     public Color MutedColor { get; set; }
     public Color SelectedColor { get; set; }
+    public Color SelectionTextColor { get; set; }
     public Color ActiveColor { get; set; }
     public Color LineColor { get; set; }
     public event EventHandler SelectionChanged;
@@ -299,6 +309,7 @@ public sealed class FolderPresetList : ScrollableControl
         ReorderEnabled = true;
         MutedColor = Color.Gray;
         SelectedColor = Color.FromArgb(58, 80, 106);
+        SelectionTextColor = Color.White;
         ActiveColor = SystemColors.Highlight;
         LineColor = Color.FromArgb(90, 90, 90);
         animation.Interval = 16;
@@ -315,9 +326,19 @@ public sealed class FolderPresetList : ScrollableControl
             return values;
         }
     }
+    public string[] CheckedPaths
+    {
+        get
+        {
+            List<string> values = new List<string>();
+            foreach (Row row in rows) if (row.Checked) values.Add(row.Path);
+            return values.ToArray();
+        }
+    }
     public void SetPaths(string[] paths)
     {
         string previous = SelectedPath;
+        HashSet<string> checkedPaths = new HashSet<string>(CheckedPaths, StringComparer.OrdinalIgnoreCase);
         rows.Clear();
         selected = null;
         dragged = null;
@@ -327,6 +348,7 @@ public sealed class FolderPresetList : ScrollableControl
             foreach (string path in paths)
             {
                 Row row = new Row(path, rows.Count * RowHeight);
+                row.Checked = checkedPaths.Contains(path);
                 rows.Add(row);
                 if (previous != null && string.Equals(path, previous, StringComparison.OrdinalIgnoreCase))
                     selected = row;
@@ -360,6 +382,15 @@ public sealed class FolderPresetList : ScrollableControl
         Focus();
         int index = RowAt(e.Y);
         selected = index < 0 ? null : rows[index];
+        if (CheckEnabled && selected != null && e.X < 32)
+        {
+            selected.Checked = !selected.Checked;
+            dragged = null;
+            Capture = false;
+            Invalidate();
+            OnSelectionChanged();
+            return;
+        }
         dragged = ReorderEnabled ? selected : null;
         mouseDownY = e.Y;
         dragOffset = selected == null ? 0 : e.Y - (int)selected.Y - AutoScrollPosition.Y;
@@ -402,10 +433,19 @@ public sealed class FolderPresetList : ScrollableControl
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
+        if (CheckEnabled && e.X < 32) return;
         if (SelectedPath != null && ItemActivated != null) ItemActivated(this, EventArgs.Empty);
     }
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        if (CheckEnabled && e.KeyCode == Keys.Space && selected != null)
+        {
+            selected.Checked = !selected.Checked;
+            Invalidate();
+            OnSelectionChanged();
+            e.Handled = true;
+            return;
+        }
         if (rows.Count > 0 && (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down))
         {
             int current = SelectedIndex;
@@ -460,9 +500,13 @@ public sealed class FolderPresetList : ScrollableControl
         int y = (int)Math.Round(row.Y) + AutoScrollPosition.Y;
         if (y > ClientSize.Height || y + RowHeight < 0) return;
         bool active = string.Equals(row.Path, ActivePath, StringComparison.OrdinalIgnoreCase);
+        bool highlighted = row == selected;
         Rectangle bounds = new Rectangle(0, y, ClientSize.Width, RowHeight);
-        Color fill = row == selected ? SelectedColor : BackColor;
+        Color fill = highlighted ? SelectedColor : BackColor;
         using (SolidBrush brush = new SolidBrush(fill)) graphics.FillRectangle(brush, bounds);
+        if (highlighted)
+            using (SolidBrush brush = new SolidBrush(ActiveColor))
+                graphics.FillRectangle(brush, 0, y, 4, RowHeight);
         if (active)
             using (SolidBrush brush = new SolidBrush(ActiveColor))
                 graphics.FillRectangle(brush, 0, y + 5, 3, RowHeight - 10);
@@ -470,12 +514,33 @@ public sealed class FolderPresetList : ScrollableControl
             graphics.DrawLine(pen, 8, y + RowHeight - 1, ClientSize.Width - 8, y + RowHeight - 1);
         string name = System.IO.Path.GetFileName(row.Path.TrimEnd('\\'));
         if (string.IsNullOrEmpty(name)) name = row.Path;
-        Color primary = System.IO.Directory.Exists(row.Path) ? ForeColor : MutedColor;
-        Rectangle title = new Rectangle(15, y + 4, ClientSize.Width - 28, 23);
-        Rectangle detail = new Rectangle(15, y + 27, ClientSize.Width - 28, 20);
+        Color primary = highlighted ? SelectionTextColor :
+            (System.IO.Directory.Exists(row.Path) ? ForeColor : MutedColor);
+        Color secondary = highlighted ? SelectionTextColor : MutedColor;
+        int textLeft = CheckEnabled ? 43 : 15;
+        if (CheckEnabled)
+        {
+            Rectangle check = new Rectangle(14, y + 17, 18, 18);
+            Color checkColor = highlighted ? SelectionTextColor :
+                (row.Checked ? ActiveColor : MutedColor);
+            using (Pen outline = new Pen(checkColor, 1.5f))
+                graphics.DrawRectangle(outline, check);
+            if (row.Checked)
+            {
+                using (SolidBrush brush = new SolidBrush(checkColor))
+                    graphics.FillRectangle(brush, 16, y + 19, 15, 15);
+                using (Pen tick = new Pen(highlighted ? SelectedColor : Color.White, 2f))
+                {
+                    graphics.DrawLine(tick, 19, y + 26, 22, y + 29);
+                    graphics.DrawLine(tick, 22, y + 29, 28, y + 22);
+                }
+            }
+        }
+        Rectangle title = new Rectangle(textLeft, y + 4, ClientSize.Width - textLeft - 13, 23);
+        Rectangle detail = new Rectangle(textLeft, y + 27, ClientSize.Width - textLeft - 13, 20);
         TextRenderer.DrawText(graphics, name, Font, title, primary,
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
-        TextRenderer.DrawText(graphics, row.Path, Font, detail, MutedColor,
+        TextRenderer.DrawText(graphics, row.Path, Font, detail, secondary,
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
     }
     protected override void Dispose(bool disposing)
@@ -1047,36 +1112,84 @@ for($i=0;$i -lt $metaLabels.Count;$i++){
 }
 [void]$infoPanel.Controls.Add($metaPanel,0,0)
 
+$playlistRegion=[Windows.Forms.TableLayoutPanel]::new()
+$playlistRegion.Dock='Fill';$playlistRegion.ColumnCount=1;$playlistRegion.RowCount=3
+[void]$playlistRegion.RowStyles.Add([Windows.Forms.RowStyle]::new('Absolute',42))
+[void]$playlistRegion.RowStyles.Add([Windows.Forms.RowStyle]::new('Absolute',32))
+[void]$playlistRegion.RowStyles.Add([Windows.Forms.RowStyle]::new('Percent',100))
+$searchPanel=[Windows.Forms.Panel]::new()
+$searchPanel.Dock='Fill';$searchPanel.Padding=[Windows.Forms.Padding]::new(1)
+$searchPanel.Margin=[Windows.Forms.Padding]::new(8,4,0,2)
+$searchLayout=[Windows.Forms.TableLayoutPanel]::new()
+$searchLayout.Dock='Fill';$searchLayout.ColumnCount=4;$searchLayout.RowCount=1
+$searchLayout.Margin=[Windows.Forms.Padding]::new(0)
+[void]$searchLayout.RowStyles.Add([Windows.Forms.RowStyle]::new('Percent',100))
+[void]$searchLayout.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Absolute',34))
+[void]$searchLayout.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Percent',100))
+[void]$searchLayout.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Absolute',0))
+[void]$searchLayout.ColumnStyles.Add([Windows.Forms.ColumnStyle]::new('Absolute',0))
+$searchIcon=[Windows.Forms.Panel]::new()
+$searchIcon.Dock='Fill';$searchIcon.Margin=[Windows.Forms.Padding]::new(0)
+$script:searchIconColor=[Drawing.Color]::Gray
+$searchIcon.Add_Paint({param($sender,$e)
+  $e.Graphics.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
+  $pen=[Drawing.Pen]::new($script:searchIconColor,[single]1.8)
+  try{
+    $e.Graphics.DrawEllipse($pen,10,8,11,11)
+    $e.Graphics.DrawLine($pen,19,18,25,24)
+  }finally{$pen.Dispose()}
+})
+$searchBox=[Windows.Forms.TextBox]::new()
+$searchBox.Dock='Fill';$searchBox.BorderStyle='None'
+$searchBox.Margin=[Windows.Forms.Padding]::new(1,8,2,4)
+$searchCount=[Windows.Forms.Label]::new()
+$searchCount.Dock='Fill';$searchCount.TextAlign='MiddleRight'
+$searchCount.Margin=[Windows.Forms.Padding]::new(0,0,6,0)
+$searchClear=[Windows.Forms.Button]::new()
+$searchClear.Text='×';$searchClear.Dock='Fill'
+$searchClear.Margin=[Windows.Forms.Padding]::new(0)
+$searchPanel.Add_Paint({param($sender,$e)
+  if($null -eq $script:searchBorder){return}
+  $pen=[Drawing.Pen]::new($script:searchBorder)
+  try{$e.Graphics.DrawRectangle($pen,0,0,$sender.ClientSize.Width-1,$sender.ClientSize.Height-1)}
+  finally{$pen.Dispose()}
+})
+$searchPanel.Add_Resize({$searchPanel.Invalidate()})
+[void]$searchLayout.Controls.Add($searchIcon,0,0)
+[void]$searchLayout.Controls.Add($searchBox,1,0)
+[void]$searchLayout.Controls.Add($searchCount,2,0)
+[void]$searchLayout.Controls.Add($searchClear,3,0)
+[void]$searchPanel.Controls.Add($searchLayout)
+[void]$playlistRegion.Controls.Add($searchPanel,0,0)
 $list=[Windows.Forms.ListView]::new()
 $list.Dock='Fill';$list.View='Details'
 $list.FullRowSelect=$true;$list.HideSelection=$false;$list.MultiSelect=$false
-$list.HeaderStyle='Nonclickable';$list.GridLines=$false;$list.OwnerDraw=$true
-$list.Margin=[Windows.Forms.Padding]::new(8,4,0,5)
+$list.HeaderStyle='None';$list.GridLines=$false;$list.OwnerDraw=$true
+$list.Margin=[Windows.Forms.Padding]::new(8,0,0,5)
 $list.Add_HandleCreated({
   if($null -ne $script:themeDark){[PlayerDwm]::SetListTheme($list.Handle,[bool]$script:themeDark)}
 })
 [void]$list.Columns.Add('序号',58)
 [void]$list.Columns.Add('曲目',500)
-$list.Add_DrawColumnHeader({
+$columnHeader=[Windows.Forms.Panel]::new()
+$columnHeader.Dock='Fill';$columnHeader.Margin=[Windows.Forms.Padding]::new(8,0,0,0)
+$columnHeader.Add_Paint({
   param($sender,$e)
-  if($script:themeDark){
-    $background=[Drawing.Color]::FromArgb(47,49,54)
-    $foreground=[Drawing.Color]::FromArgb(238,239,242)
-    $edge=[Drawing.Color]::FromArgb(83,87,95)
-  }else{
-    $background=[Drawing.Color]::FromArgb(236,238,241)
-    $foreground=[Drawing.Color]::FromArgb(25,27,30)
-    $edge=[Drawing.Color]::FromArgb(180,184,190)
-  }
-  $brush=[Drawing.SolidBrush]::new($background)
-  $pen=[Drawing.Pen]::new($edge)
+  $pen=[Drawing.Pen]::new($script:headerEdge)
   try{
-    $e.Graphics.FillRectangle($brush,$e.Bounds)
-    $e.Graphics.DrawLine($pen,$e.Bounds.Left,$e.Bounds.Bottom-1,$e.Bounds.Right,$e.Bounds.Bottom-1)
-    $textBounds=[Drawing.Rectangle]::new($e.Bounds.Left+6,$e.Bounds.Top,$e.Bounds.Width-8,$e.Bounds.Height)
+    $firstWidth=$list.Columns[0].Width
+    $lastEdge=[Math]::Min($sender.Width-1,$firstWidth+$list.Columns[1].Width)
+    $e.Graphics.DrawLine($pen,0,0,$sender.Width-1,0)
+    $e.Graphics.DrawLine($pen,0,$sender.Height-1,$sender.Width-1,$sender.Height-1)
+    $e.Graphics.DrawLine($pen,$firstWidth,0,$firstWidth,$sender.Height-1)
+    $e.Graphics.DrawLine($pen,$lastEdge,0,$lastEdge,$sender.Height-1)
+    $e.Graphics.DrawLine($pen,$sender.Width-1,0,$sender.Width-1,$sender.Height-1)
     $flags=[Windows.Forms.TextFormatFlags]::Left -bor [Windows.Forms.TextFormatFlags]::VerticalCenter -bor [Windows.Forms.TextFormatFlags]::EndEllipsis
-    [Windows.Forms.TextRenderer]::DrawText($e.Graphics,$e.Header.Text,$list.Font,$textBounds,$foreground,$flags)
-  }finally{$brush.Dispose();$pen.Dispose()}
+    $numberBounds=[Drawing.Rectangle]::new(8,1,$firstWidth-10,$sender.Height-2)
+    $titleBounds=[Drawing.Rectangle]::new($firstWidth+8,1,[Math]::Max(0,$lastEdge-$firstWidth-10),$sender.Height-2)
+    [Windows.Forms.TextRenderer]::DrawText($e.Graphics,'序号',$list.Font,$numberBounds,$sender.ForeColor,$flags)
+    [Windows.Forms.TextRenderer]::DrawText($e.Graphics,'曲目',$list.Font,$titleBounds,$sender.ForeColor,$flags)
+  }finally{$pen.Dispose()}
 })
 $list.Add_DrawItem({
   param($sender,$e)
@@ -1089,12 +1202,17 @@ $list.Add_DrawSubItem({
   $brush=[Drawing.SolidBrush]::new($background)
   try{
     $e.Graphics.FillRectangle($brush,$e.Bounds)
+    $edge=[Drawing.Pen]::new($script:headerEdge)
+    try{$e.Graphics.DrawLine($edge,$e.Bounds.Right-2,$e.Bounds.Top,$e.Bounds.Right-2,$e.Bounds.Bottom-1)}
+    finally{$edge.Dispose()}
     $textBounds=[Drawing.Rectangle]::new($e.Bounds.Left+6,$e.Bounds.Top,[Math]::Max(0,$e.Bounds.Width-8),$e.Bounds.Height)
     $flags=[Windows.Forms.TextFormatFlags]::Left -bor [Windows.Forms.TextFormatFlags]::VerticalCenter -bor [Windows.Forms.TextFormatFlags]::EndEllipsis
     [Windows.Forms.TextRenderer]::DrawText($e.Graphics,$e.SubItem.Text,$list.Font,$textBounds,$foreground,$flags)
   }finally{$brush.Dispose()}
 })
-[void]$infoPanel.Controls.Add($list,1,0)
+[void]$playlistRegion.Controls.Add($columnHeader,0,1)
+[void]$playlistRegion.Controls.Add($list,0,2)
+[void]$infoPanel.Controls.Add($playlistRegion,1,0)
 [void]$body.Controls.Add($infoPanel,0,0)
 
 $seekPanel=[Windows.Forms.TableLayoutPanel]::new()
@@ -1145,6 +1263,9 @@ $toolTip.SetToolTip($volume,'滚轮每格调整 5% 音量')
 $toolTip.SetToolTip($prev,'上一首')
 $toolTip.SetToolTip($next,'下一首')
 $toolTip.SetToolTip($stop,'停止')
+$toolTip.SetToolTip($searchBox,'输入曲名或文件路径，按 Enter 查找下一个；Ctrl+F 聚焦搜索')
+$toolTip.SetToolTip($searchIcon,'搜索当前列表')
+$toolTip.SetToolTip($searchClear,'清除搜索')
 
 function Set-TransportIcon($button,[int]$kind,[Drawing.Color]$color) {
   $key="$kind/$($color.ToArgb())"
@@ -1249,7 +1370,21 @@ function Apply-Theme([bool]$force=$false) {
     $muted=[Drawing.Color]::FromArgb(80,80,80)
     $track=[Drawing.Color]::FromArgb(171,176,182)
   }
-  foreach($panel in @($form,$frame,$body,$infoPanel,$metaPanel,$seekPanel,$bar,$spacer)){$panel.BackColor=$surface}
+  foreach($panel in @($form,$frame,$body,$infoPanel,$metaPanel,$seekPanel,$bar,$spacer,$playlistRegion)){$panel.BackColor=$surface}
+  $script:searchBorder=$border
+  $script:headerEdge=$border
+  $script:searchIconColor=$muted
+  $searchPanel.BackColor=$input;$searchPanel.Invalidate()
+  $searchLayout.BackColor=$input
+  $searchIcon.BackColor=$input;$searchIcon.Invalidate()
+  $searchBox.BackColor=$input;$searchBox.ForeColor=$text
+  $searchCount.BackColor=$input;$searchCount.ForeColor=$muted
+  $searchClear.FlatStyle='Flat';$searchClear.UseVisualStyleBackColor=$false
+  $searchClear.FlatAppearance.BorderSize=0
+  $searchClear.FlatAppearance.MouseOverBackColor=$hover
+  $searchClear.FlatAppearance.MouseDownBackColor=$hover
+  $searchClear.BackColor=$input
+  $searchClear.ForeColor=if($dark){[Drawing.Color]::White}else{$text}
   $menu.BackColor=$surface;$menu.ForeColor=$text
   $menu.Renderer=[Windows.Forms.ToolStripProfessionalRenderer]::new([PlayerMenuColors]::new($dark))
   foreach($dropDown in @($fileMenu.DropDown,$modeMenu.DropDown)){$dropDown.BackColor=$surface}
@@ -1258,6 +1393,8 @@ function Apply-Theme([bool]$force=$false) {
   }
   $cover.BackColor=$input
   $list.BackColor=$input;$list.ForeColor=$text
+  $columnHeader.BackColor=if($dark){[Drawing.Color]::FromArgb(47,49,54)}else{[Drawing.Color]::FromArgb(236,238,241)}
+  $columnHeader.ForeColor=$text;$columnHeader.Invalidate()
   if($list.IsHandleCreated){[PlayerDwm]::SetListTheme($list.Handle,$dark)}
   $list.Invalidate()
   foreach($label in @($now,$composerLabel,$albumLabel,$yearLabel,$clock,$volPercent)){
@@ -1312,8 +1449,9 @@ function Reset-TrackInfo {
   $composerLabel.Text='作曲家：—'
   $albumLabel.Text='专辑：—'
   $yearLabel.Text='年份：—'
-  foreach($label in @($now,$albumLabel)){$toolTip.SetToolTip($label,$label.Text)}
+  $toolTip.SetToolTip($now,$now.Text)
   $toolTip.SetToolTip($composerLabel,'—')
+  $toolTip.SetToolTip($albumLabel,'—')
   $toolTip.SetToolTip($yearLabel,'—')
   $old=$cover.Image
   $cover.Image=$script:placeholderArt
@@ -1470,9 +1608,58 @@ function Scan-Folder {
     }else{$status.Text='目录不存在，请从“文件”菜单选择音乐目录。'}
   }catch{$status.Text='扫描失败：'+$_.Exception.Message}
   finally{$list.EndUpdate()}
+  if($list.IsHandleCreated){Set-PlaylistColumnWidth}
+  if(-not [string]::IsNullOrWhiteSpace($searchBox.Text)){[void](Find-TrackFromSearch)}
   $toolTip.SetToolTip($status,$script:path)
   Save-Config
 }
+function Find-TrackFromSearch([bool]$advance=$false) {
+  $query=$searchBox.Text.Trim()
+  if($query.Length -eq 0){$searchCount.Text='';return $false}
+  $count=$list.Items.Count
+  $matches=0
+  for($i=0;$i -lt $count;$i++){
+    if($list.Items[$i].SubItems[1].Text.IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+      $matches++
+      if($matches -gt 128){break}
+    }
+  }
+  $searchCount.Text=if($matches -gt 128){'过多'}else{"$matches 项"}
+  if($matches -eq 0){return $false}
+  $start=0
+  if($advance -and $list.SelectedIndices.Count -gt 0){$start=($list.SelectedIndices[0]+1)%$count}
+  for($offset=0;$offset -lt $count;$offset++){
+    $index=($start+$offset)%$count
+    $name=$list.Items[$index].SubItems[1].Text
+    if($name.IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+      $list.SelectedItems.Clear()
+      $list.Items[$index].Selected=$true
+      $list.Items[$index].EnsureVisible()
+      return $true
+    }
+  }
+  return $false
+}
+$searchBox.Add_TextChanged({
+  $hasQuery=($searchBox.Text.Trim().Length -gt 0)
+  $searchLayout.ColumnStyles[2].Width=if($hasQuery){70}else{0}
+  $searchLayout.ColumnStyles[3].Width=if($hasQuery){30}else{0}
+  [void](Find-TrackFromSearch)
+})
+$searchBox.Add_KeyDown({param($sender,$e)
+  if($e.KeyCode -eq [Windows.Forms.Keys]::Enter){
+    [void](Find-TrackFromSearch $true);$e.SuppressKeyPress=$true
+  }elseif($e.KeyCode -eq [Windows.Forms.Keys]::Escape){
+    $searchBox.Clear();$e.SuppressKeyPress=$true
+  }
+})
+$searchClear.Add_Click({$searchBox.Clear();[void]$searchBox.Focus()})
+$form.KeyPreview=$true
+$form.Add_KeyDown({param($sender,$e)
+  if($e.Control -and $e.KeyCode -eq [Windows.Forms.Keys]::F){
+    [void]$searchBox.Focus();$searchBox.SelectAll();$e.SuppressKeyPress=$true
+  }
+})
 function Set-MusicFolder([string]$candidate) {
   $normalized=Normalize-FolderPath $candidate
   if(-not $normalized -or -not [IO.Directory]::Exists($normalized)){
@@ -1657,6 +1844,60 @@ function Confirm-DeletePreset([string]$folder,[Windows.Forms.Form]$owner) {
   try{return ($dialog.ShowDialog($owner) -eq [Windows.Forms.DialogResult]::Yes)}
   finally{$dialog.Dispose()}
 }
+function Confirm-DeleteHistory([string[]]$folders,[Windows.Forms.Form]$owner) {
+  if($folders.Count -eq 0){return $false}
+  $dialog=[Windows.Forms.Form]::new()
+  $dialog.Text='确认删除历史记录'
+  $dialog.ClientSize=[Drawing.Size]::new(520,244)
+  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog'
+  $dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
+  $dialog.ShowInTaskbar=$false;$dialog.Font=$form.Font
+  if($form.Icon){$dialog.Icon=$form.Icon}
+  $dark=[bool]$script:themeDark
+  $surface=if($dark){[Drawing.Color]::FromArgb(30,32,36)}else{[Drawing.Color]::FromArgb(248,248,248)}
+  $textColor=if($dark){[Drawing.Color]::FromArgb(238,239,242)}else{[Drawing.Color]::FromArgb(25,27,30)}
+  $mutedColor=if($dark){[Drawing.Color]::FromArgb(181,185,193)}else{[Drawing.Color]::FromArgb(85,85,85)}
+  $buttonColor=if($dark){[Drawing.Color]::FromArgb(53,56,62)}else{[Drawing.Color]::FromArgb(235,235,235)}
+  $dialog.BackColor=$surface;$dialog.ForeColor=$textColor
+  $dialog.Tag=[pscustomobject]@{Dark=$dark;Border=$surface}
+  $question=[Windows.Forms.Label]::new()
+  $question.Text=('从“历史播放列表”中删除选中的 {0} 条目录记录？' -f $folders.Count)
+  $question.Location=[Drawing.Point]::new(18,18);$question.Size=[Drawing.Size]::new(480,30)
+  $question.ForeColor=$textColor
+  [void]$dialog.Controls.Add($question)
+  for($i=0;$i -lt [Math]::Min(3,$folders.Count);$i++){
+    $detail=[Windows.Forms.Label]::new()
+    $detail.Text=$folders[$i];$detail.AutoEllipsis=$true
+    $detail.Location=[Drawing.Point]::new(18,58+26*$i)
+    $detail.Size=[Drawing.Size]::new(480,24);$detail.ForeColor=$mutedColor
+    [void]$dialog.Controls.Add($detail)
+  }
+  if($folders.Count -gt 3){
+    $remaining=[Windows.Forms.Label]::new()
+    $remaining.Text="另有 $($folders.Count-3) 条记录"
+    $remaining.Location=[Drawing.Point]::new(18,140)
+    $remaining.Size=[Drawing.Size]::new(480,24);$remaining.ForeColor=$mutedColor
+    [void]$dialog.Controls.Add($remaining)
+  }
+  $cancel=[ThemedPlaylistButton]::new()
+  $cancel.Text='取消';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel
+  $cancel.Location=[Drawing.Point]::new(400,188);$cancel.Size=[Drawing.Size]::new(100,36)
+  $cancel.BackColor=$buttonColor;$cancel.ForeColor=$textColor
+  $delete=[ThemedPlaylistButton]::new()
+  $delete.Text="删除 $($folders.Count) 条";$delete.DialogResult=[Windows.Forms.DialogResult]::Yes
+  $delete.Location=[Drawing.Point]::new(276,188);$delete.Size=[Drawing.Size]::new(116,36)
+  $delete.BackColor=if($dark){[Drawing.Color]::FromArgb(94,51,55)}else{[Drawing.Color]::FromArgb(245,217,219)}
+  $delete.ForeColor=$textColor
+  $delete.HoverColor=if($dark){[Drawing.Color]::FromArgb(111,61,66)}else{[Drawing.Color]::FromArgb(237,197,201)}
+  $dialog.CancelButton=$cancel
+  [void]$dialog.Controls.AddRange([Windows.Forms.Control[]]@($delete,$cancel))
+  $dialog.Add_HandleCreated({param($sender,$e)
+    [PlayerDwm]::SetDarkTitleBar($sender.Handle,[bool]$sender.Tag.Dark)
+    [PlayerDwm]::SetBorderColor($sender.Handle,$sender.Tag.Border)
+  })
+  try{return ($dialog.ShowDialog($owner) -eq [Windows.Forms.DialogResult]::Yes)}
+  finally{$dialog.Dispose()}
+}
 function New-FolderActionButton([int]$kind,[string]$name,[Drawing.Color]$color,[Drawing.Color]$background) {
   $button=[Windows.Forms.Button]::new()
   $button.Size=[Drawing.Size]::new(36,34)
@@ -1695,7 +1936,7 @@ function Show-PlaylistWindow {
   $buttonColor=if($dark){[Drawing.Color]::FromArgb(53,56,62)}else{[Drawing.Color]::FromArgb(240,240,240)}
   $textColor=if($dark){[Drawing.Color]::FromArgb(238,239,242)}else{[Drawing.Color]::FromArgb(25,27,30)}
   $mutedColor=if($dark){[Drawing.Color]::FromArgb(181,185,193)}else{[Drawing.Color]::FromArgb(90,90,90)}
-  $selectedColor=Blend-Color $input $script:accent $(if($dark){0.24}else{0.18})
+  $selectedColor=$script:accent
   $lineColor=if($dark){[Drawing.Color]::FromArgb(68,72,79)}else{[Drawing.Color]::FromArgb(218,221,226)}
   $window.BackColor=$surface;$window.ForeColor=$textColor
   $shell=[Windows.Forms.TableLayoutPanel]::new()
@@ -1764,11 +2005,11 @@ function Show-PlaylistWindow {
   $historyToolbar=[Windows.Forms.FlowLayoutPanel]::new()
   $historyToolbar.Dock='Fill';$historyToolbar.WrapContents=$false
   $historyToolbar.BackColor=$surface
-  $deleteHistoryButton=New-FolderActionButton 1 '删除历史记录' $textColor $buttonColor
+  $deleteHistoryButton=New-FolderActionButton 1 '删除预设' $textColor $buttonColor
   [void]$historyToolbar.Controls.Add($deleteHistoryButton)
-  $playlistToolTip.SetToolTip($deleteHistoryButton,'删除历史记录')
+  $playlistToolTip.SetToolTip($deleteHistoryButton,'删除预设')
   $historyHint=[Windows.Forms.Label]::new()
-  $historyHint.Text='最近使用的目录，最多 64 条';$historyHint.AutoSize=$true
+  $historyHint.Text='勾选可批量删除 · 最近使用的目录最多 64 条';$historyHint.AutoSize=$true
   $historyHint.ForeColor=$mutedColor;$historyHint.Margin=[Windows.Forms.Padding]::new(10,9,0,0)
   [void]$historyToolbar.Controls.Add($historyHint)
   [void]$layouts[1].Controls.Add($historyToolbar,0,0)
@@ -1776,6 +2017,7 @@ function Show-PlaylistWindow {
   $presetList.Dock='Fill';$presetList.Margin=[Windows.Forms.Padding]::new(0,0,0,0)
   $presetList.BackColor=$input;$presetList.ForeColor=$textColor
   $presetList.MutedColor=$mutedColor;$presetList.SelectedColor=$selectedColor
+  $presetList.SelectionTextColor=(Get-AccentTextColor $script:accent)
   $presetList.LineColor=$lineColor;$presetList.ActiveColor=$script:accent
   $presetList.ActivePath=$script:path
   $presetList.Add_HandleCreated({param($sender,$e)
@@ -1787,8 +2029,9 @@ function Show-PlaylistWindow {
   $historyList.Dock='Fill';$historyList.Margin=[Windows.Forms.Padding]::new(0,0,0,0)
   $historyList.BackColor=$input;$historyList.ForeColor=$textColor
   $historyList.MutedColor=$mutedColor;$historyList.SelectedColor=$selectedColor
+  $historyList.SelectionTextColor=(Get-AccentTextColor $script:accent)
   $historyList.LineColor=$lineColor;$historyList.ActiveColor=$script:accent
-  $historyList.ReorderEnabled=$false;$historyList.ActivePath=$script:path
+  $historyList.ReorderEnabled=$false;$historyList.CheckEnabled=$true;$historyList.ActivePath=$script:path
   $historyList.Add_HandleCreated({param($sender,$e)
     [PlayerDwm]::SetListTheme($sender.Handle,[bool]$script:themeDark)
   })
@@ -1839,7 +2082,8 @@ function Show-PlaylistWindow {
   $historyList.Add_SelectionChanged({
     $ctx=$script:playlistDialogContext
     $hasSelection=($null -ne $ctx.HistoryList.SelectedPath)
-    $ctx.DeleteHistoryButton.Enabled=$hasSelection;$ctx.SwitchButtons[1].Enabled=$hasSelection
+    $ctx.DeleteHistoryButton.Enabled=($hasSelection -or $ctx.HistoryList.CheckedPaths.Count -gt 0)
+    $ctx.SwitchButtons[1].Enabled=$hasSelection
   })
   $deleteButton.Enabled=$false;$editButton.Enabled=$false;$deleteHistoryButton.Enabled=$false
   $addButton.Add_Click({
@@ -1894,10 +2138,15 @@ function Show-PlaylistWindow {
   })
   $deleteHistoryButton.Add_Click({
     $ctx=$script:playlistDialogContext
-    $selected=$ctx.HistoryList.SelectedPath
-    if(-not $selected){return}
-    $index=Find-FolderIndex $script:recentFolders $selected
-    if($index -ge 0){$script:recentFolders.RemoveAt($index);Save-Config}
+    $selected=[string[]]$ctx.HistoryList.CheckedPaths
+    if($selected.Count -eq 0 -and $ctx.HistoryList.SelectedPath){$selected=[string[]]@($ctx.HistoryList.SelectedPath)}
+    if($selected.Count -eq 0){return}
+    if(-not (Confirm-DeleteHistory $selected $ctx.Window)){return}
+    foreach($path in $selected){
+      $index=Find-FolderIndex $script:recentFolders $path
+      if($index -ge 0){$script:recentFolders.RemoveAt($index)}
+    }
+    Save-Config
     $ctx.HistoryList.SetPaths($script:recentFolders.ToArray())
     $ctx.CountLabels[1].Text="共 $($script:recentFolders.Count) 条记录"
   })
@@ -1980,7 +2229,7 @@ function Show-About {
   $build.Size=[Drawing.Size]::new(620,102);$build.ForeColor=$textColor;$build.BackColor=$surface
   [void]$about.Controls.Add($build)
   $details=@(
-    @('版本','1.0.0.2'),
+    @('版本','1.0.0.3'),
     @('程序许可','MIT'),
     @('媒体标签组件','TagLibSharp 2.3.0 · LGPL-2.1-only')
   )
@@ -2030,7 +2279,7 @@ function Show-About {
   $copy.Text='复制信息';$copy.Location=[Drawing.Point]::new(20,454)
   $copy.Size=[Drawing.Size]::new(145,34)
   $copy.Add_Click({
-    $clipboardText="LocalMusicPlayer 1.0.0.2`r`n世界重构 / FlashDragon / 庚辰`r`nhttps://github.com/FlashDragons/LocalMusicPlayer"
+    $clipboardText="LocalMusicPlayer 1.0.0.3`r`n世界重构 / FlashDragon / 庚辰`r`nhttps://github.com/FlashDragons/LocalMusicPlayer"
     [Windows.Forms.Clipboard]::SetText($clipboardText)
   })
   [void]$about.Controls.Add($copy)
@@ -2158,22 +2407,19 @@ $timer.Add_Tick({
     }
   }else{$clock.Text=('{0:mm\:ss}' -f $p)}
 })
-function Set-PlaylistColumnWidth([bool]$reserveScrollbar) {
+function Set-PlaylistColumnWidth {
   if($form.IsDisposed -or $list.Columns.Count -lt 2){return}
-  $reserve=if($reserveScrollbar){[Windows.Forms.SystemInformation]::VerticalScrollBarWidth+8}else{2}
-  $width=[Math]::Max(160,$list.ClientSize.Width-$list.Columns[0].Width-$reserve)
+  $width=[Math]::Max(160,$list.ClientSize.Width-$list.Columns[0].Width-2)
   if($list.Columns[1].Width -ne $width){$list.Columns[1].Width=$width}
+  $columnHeader.Invalidate()
+  if($list.IsHandleCreated){[PlayerDwm]::HideHorizontalScroll($list.Handle)}
 }
 $form.Add_Shown({
-  Set-PlaylistColumnWidth $true
-  [void]$form.BeginInvoke([Action]{Set-PlaylistColumnWidth $false})
+  Set-PlaylistColumnWidth
   [void]$play.Focus()
   Apply-Theme $true
 })
-$form.Add_Resize({
-  Set-PlaylistColumnWidth $true
-  if($form.IsHandleCreated){[void]$form.BeginInvoke([Action]{Set-PlaylistColumnWidth $false})}
-})
+$list.Add_SizeChanged({Set-PlaylistColumnWidth})
 $form.Add_FormClosing({
   $timer.Stop();Save-Config;$script:player.Close()
   foreach($transport in @($play,$stop,$prev,$next,$muteButton)){

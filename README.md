@@ -1,5 +1,9 @@
 # LocalMusicPlayer
 
+<div align="center">
+    <img src="https://raw.githubusercontent.com/FlashDragons/LocalMusicPlayer/refs/heads/main/assets/2026-11-01_10-22-51.jpg" width="500" alt="LocalMusicPlayer 界面预览">
+</div>
+
 LocalMusicPlayer 是一个 Windows 本地音乐播放器。支持文件夹播放列表预设和历史记录、专辑封面和标签信息、五种播放模式、任务栏缩略图控制与播放进度，以及跟随系统的深浅色主题和强调色。
 由 ChatGPT 制作。
 
