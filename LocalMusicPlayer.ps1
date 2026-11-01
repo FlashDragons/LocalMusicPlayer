@@ -897,6 +897,7 @@ Add-Type -Path $tagLibPath -ErrorAction Stop
 function Get-SongInfo([string]$filePath) {
   $info=[pscustomobject]@{
     Title=[IO.Path]::GetFileNameWithoutExtension($filePath)
+    Duration=[TimeSpan]::Zero
     Composer='未标注'
     CreditLabel='作曲家'
     Album='未标注'
@@ -906,6 +907,7 @@ function Get-SongInfo([string]$filePath) {
   $media=$null
   try {
     $media=[TagLib.File]::Create($filePath)
+    $info.Duration=$media.Properties.Duration
     $tag=$media.Tag
     if(-not [string]::IsNullOrWhiteSpace($tag.Title)){$info.Title=$tag.Title}
     $composers=@($tag.Composers|Where-Object {-not [string]::IsNullOrWhiteSpace($_)})
@@ -1180,6 +1182,7 @@ $columnHeader.Add_Paint({
     $firstWidth=$list.Columns[0].Width
     $lastEdge=[Math]::Min($sender.Width-1,$firstWidth+$list.Columns[1].Width)
     $e.Graphics.DrawLine($pen,0,0,$sender.Width-1,0)
+    $e.Graphics.DrawLine($pen,0,0,0,$sender.Height-1)
     $e.Graphics.DrawLine($pen,0,$sender.Height-1,$sender.Width-1,$sender.Height-1)
     $e.Graphics.DrawLine($pen,$firstWidth,0,$firstWidth,$sender.Height-1)
     $e.Graphics.DrawLine($pen,$lastEdge,0,$lastEdge,$sender.Height-1)
@@ -1445,6 +1448,7 @@ function Shuffle-Bag {
   }
 }
 function Reset-TrackInfo {
+  $script:flacDuration=[TimeSpan]::Zero
   $now.Text='尚未播放'
   $composerLabel.Text='作曲家：—'
   $albumLabel.Text='专辑：—'
@@ -1459,6 +1463,7 @@ function Reset-TrackInfo {
 }
 function Set-TrackInfo([string]$filePath) {
   $info=Get-SongInfo $filePath
+  $script:flacDuration=if([IO.Path]::GetExtension($filePath).Equals('.flac',[StringComparison]::OrdinalIgnoreCase)){$info.Duration}else{[TimeSpan]::Zero}
   $now.Text=$info.Title
   $composerLabel.Text=$info.CreditLabel+'：'+$info.Composer
   $albumLabel.Text='专辑：'+$info.Album
@@ -1501,6 +1506,7 @@ function Set-TrackInfo([string]$filePath) {
 function Start-Track([int]$index,[bool]$remember=$true){
   if($index -lt 0 -or $index -ge $script:tracks.Count){return}
   try{
+    $script:flacDuration=[TimeSpan]::Zero
     $script:player.Stop();$script:player.Close()
     $script:player.Open([Uri]::new($script:tracks[$index].FullName))
     Apply-Volume
@@ -1569,6 +1575,13 @@ function Play-Next([bool]$automatic=$false) {
     $index=0
   }
   Start-Track $index
+}
+function Complete-FlacAtEnd {
+  if(-not $script:playing -or $script:paused -or $script:current -lt 0 -or
+     $script:flacDuration.Ticks -le 0){return $false}
+  if($script:player.Position -lt $script:flacDuration){return $false}
+  Play-Next $true
+  return $true
 }
 function Play-Previous {
   if($script:tracks.Count -eq 0){return}
@@ -2398,6 +2411,7 @@ $timer.Add_Tick({
   $form.SetThumbnailState($script:playing,($script:tracks.Count -gt 0))
   Update-TaskbarProgress
   if($script:current -lt 0){return}
+  if(Complete-FlacAtEnd){return}
   $p=$script:player.Position
   if($script:player.NaturalDuration.HasTimeSpan){
     $d=$script:player.NaturalDuration.TimeSpan
