@@ -158,6 +158,43 @@ public static class PlayerDwm
     }
 }
 
+public sealed class PlayerListView : ListView
+{
+    public Color ColumnEdgeColor { get; set; }
+
+    protected override void WndProc(ref Message message)
+    {
+        base.WndProc(ref message);
+        if (message.Msg != 0x000F || !IsHandleCreated || Parent == null || Columns.Count < 2) return; // WM_PAINT
+
+        // The native control draws its own pale, offset column guides below the last
+        // item. Replace only that empty area so it joins the owner-drawn row lines.
+        int blankTop = 0;
+        if (Items.Count != 0)
+        {
+            try { blankTop = Math.Max(0, GetItemRect(Items.Count - 1).Bottom); }
+            catch (ArgumentException) { return; }
+        }
+        if (blankTop >= ClientSize.Height) return;
+        // Owner-drawn item bounds include the native border offset; a graphics
+        // context from HWND starts at the client area instead.
+        int clientInset = PointToScreen(Point.Empty).X - Parent.PointToScreen(Location).X;
+        int[] edges = { Columns[0].Width - clientInset,
+                        Columns[0].Width + Columns[1].Width - clientInset };
+        using (Graphics graphics = Graphics.FromHwnd(Handle))
+        using (Brush background = new SolidBrush(BackColor))
+        using (Pen edge = new Pen(ColumnEdgeColor))
+        {
+            foreach (int x in edges)
+            {
+                if (x < 1 || x >= ClientSize.Width - 2) continue;
+                graphics.FillRectangle(background, x - 1, blankTop, 3, ClientSize.Height - blankTop);
+                graphics.DrawLine(edge, x, blankTop, x, ClientSize.Height - 1);
+            }
+        }
+    }
+}
+
 public sealed class PlayerMenuColors : ProfessionalColorTable
 {
     private readonly Color surface;
@@ -1163,7 +1200,7 @@ $searchPanel.Add_Resize({$searchPanel.Invalidate()})
 [void]$searchLayout.Controls.Add($searchClear,3,0)
 [void]$searchPanel.Controls.Add($searchLayout)
 [void]$playlistRegion.Controls.Add($searchPanel,0,0)
-$list=[Windows.Forms.ListView]::new()
+$list=[PlayerListView]::new()
 $list.Dock='Fill';$list.View='Details'
 $list.FullRowSelect=$true;$list.HideSelection=$false;$list.MultiSelect=$false
 $list.HeaderStyle='None';$list.GridLines=$false;$list.OwnerDraw=$true
@@ -1376,6 +1413,7 @@ function Apply-Theme([bool]$force=$false) {
   foreach($panel in @($form,$frame,$body,$infoPanel,$metaPanel,$seekPanel,$bar,$spacer,$playlistRegion)){$panel.BackColor=$surface}
   $script:searchBorder=$border
   $script:headerEdge=$border
+  $list.ColumnEdgeColor=$border
   $script:searchIconColor=$muted
   $searchPanel.BackColor=$input;$searchPanel.Invalidate()
   $searchLayout.BackColor=$input
